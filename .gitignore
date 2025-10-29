@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data
+*.zarr/
+*.nc
+*.npy
+*.npz
+
+# Outputs (keep structure, ignore content)
+outputs/*/
+!outputs/.gitkeep
+
+# Models
+*.pth
+*.pkl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System
+.DS_Store
+Thumbs.db
+
+# Temp
+/tmp/
+*.log
+*.tmp

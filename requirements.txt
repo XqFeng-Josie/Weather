@@ -1,9 +1,13 @@
-# 天气数据分析所需依赖包
+# 天气预测模型所需依赖包
 
 # 核心数据处理
 xarray>=2023.1.0
 numpy>=1.24.0
 pandas>=2.0.0
+
+# 机器学习
+torch>=2.0.0
+scikit-learn>=1.3.0
 
 # 可视化
 matplotlib>=3.7.0
@@ -29,3 +33,5 @@ jupyter>=1.0.0
 ipykernel>=6.20.0
 ipywidgets>=8.0.0
 
+# 工具库
+tqdm>=4.65.0
