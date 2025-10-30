@@ -93,7 +93,6 @@ def parse_args():
     parser.add_argument(
         "--output-dir", type=str, default="./outputs", help="Output directory"
     )
-    parser.add_argument("--exp-name", type=str, default=None, help="Experiment name")
 
     return parser.parse_args()
 
@@ -181,16 +180,10 @@ def create_model(args, data_info):
 
 def main():
     args = parse_args()
-
-    # 创建输出目录
-    if args.exp_name is None:
-        args.exp_name = f"{args.model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-    output_dir = Path(args.output_dir) / args.exp_name
+    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("="*80)
-    print(f"Experiment: {args.exp_name}")
     print(f"Model: {args.model}")
     print(f"Output dir: {output_dir}")
     print("="*80)

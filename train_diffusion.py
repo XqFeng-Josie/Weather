@@ -116,7 +116,6 @@ def parse_args():
     parser.add_argument(
         "--output-dir", type=str, default="./outputs", help="Output directory"
     )
-    parser.add_argument("--exp-name", type=str, default=None, help="Experiment name")
     
     return parser.parse_args()
 
@@ -125,17 +124,12 @@ def main():
     args = parse_args()
     
     # 创建输出目录
-    if args.exp_name is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.exp_name = f"diffusion_{timestamp}"
-    
-    output_dir = Path(args.output_dir) / args.exp_name
+    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print("="*80)
     print("Diffusion Weather Prediction Model")
     print("="*80)
-    print(f"Experiment: {args.exp_name}")
     print(f"Output dir: {output_dir}")
     
     # ========================================================================

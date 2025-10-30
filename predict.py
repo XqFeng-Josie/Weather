@@ -105,28 +105,45 @@ def load_model_and_config(model_path, config_path=None):
         first_weight = state_dict["lstm.weight_ih_l0"]
         input_size = first_weight.shape[1]
         
+        # 从权重推断 hidden_size
+        # weight_ih_l0 形状是 [4*hidden_size, input_size] (LSTM有4个门)
+        hidden_size = first_weight.shape[0] // 4
+        
         model = get_model(
             'lstm',
             input_size=input_size,
-            hidden_size=config.get("hidden_size", 128),
+            hidden_size=hidden_size,  # 使用推断的 hidden_size
             num_layers=config.get("num_layers", 2),
             output_length=config.get("output_length", 4),
             dropout=config.get("dropout", 0.2),
         )
+        
+        print(f"  Inferred: input_size={input_size}, hidden_size={hidden_size}")
 
     elif model_name == 'transformer':
         first_weight = state_dict["input_projection.weight"]
         input_size = first_weight.shape[1]
+        d_model = first_weight.shape[0]  # 从权重推断 d_model
+        
+        # nhead 必须能整除 d_model
+        if d_model == 64:
+            nhead = 4  # 单变量优化版本
+        elif d_model == 128:
+            nhead = 4
+        else:
+            nhead = 8
         
         model = get_model(
             'transformer',
             input_size=input_size,
-            d_model=config.get("hidden_size", 256),
-            nhead=8,
+            d_model=d_model,  # 使用推断的 d_model
+            nhead=nhead,
             num_layers=config.get("num_layers", 4),
             output_length=config.get("output_length", 4),
             dropout=config.get("dropout", 0.1),
         )
+        
+        print(f"  Inferred: input_size={input_size}, d_model={d_model}, nhead={nhead}")
 
     elif model_name == 'cnn':
         # 从config读取
