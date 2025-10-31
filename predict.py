@@ -18,8 +18,8 @@ from src.trainer import WeatherTrainer
 
 
 # 模型数据格式映射
-SPATIAL_MODELS = ['cnn', 'convlstm', 'diffusion']
-FLAT_MODELS = ['lr', 'lr_multi', 'lstm', 'transformer']
+SPATIAL_MODELS = ["cnn", "convlstm", "diffusion"]
+FLAT_MODELS = ["lr", "lr_multi", "lstm", "transformer"]
 
 
 def parse_args():
@@ -78,19 +78,20 @@ def load_model_and_config(model_path, config_path=None):
     with open(config_path, "r") as f:
         config = json.load(f)
 
-    model_name = config['model']
+    model_name = config["model"]
     print(f"Loading model: {model_name}")
     print(f"Config: {config_path}")
 
     # 确定数据格式
     if model_name in SPATIAL_MODELS:
-        data_format = 'spatial'
+        data_format = "spatial"
     else:
-        data_format = 'flat'
+        data_format = "flat"
 
     # sklearn模型
-    if model_name in ['lr', 'lr_multi']:
+    if model_name in ["lr", "lr_multi"]:
         import pickle
+
         with open(model_path, "rb") as f:
             model = pickle.load(f)
         trainer = WeatherTrainer(model)
@@ -101,30 +102,30 @@ def load_model_and_config(model_path, config_path=None):
     state_dict = checkpoint.get("model_state_dict", checkpoint)
 
     # 根据模型类型推断参数
-    if model_name == 'lstm':
+    if model_name == "lstm":
         first_weight = state_dict["lstm.weight_ih_l0"]
         input_size = first_weight.shape[1]
-        
+
         # 从权重推断 hidden_size
         # weight_ih_l0 形状是 [4*hidden_size, input_size] (LSTM有4个门)
         hidden_size = first_weight.shape[0] // 4
-        
+
         model = get_model(
-            'lstm',
+            "lstm",
             input_size=input_size,
             hidden_size=hidden_size,  # 使用推断的 hidden_size
             num_layers=config.get("num_layers", 2),
             output_length=config.get("output_length", 4),
             dropout=config.get("dropout", 0.2),
         )
-        
+
         print(f"  Inferred: input_size={input_size}, hidden_size={hidden_size}")
 
-    elif model_name == 'transformer':
+    elif model_name == "transformer":
         first_weight = state_dict["input_projection.weight"]
         input_size = first_weight.shape[1]
         d_model = first_weight.shape[0]  # 从权重推断 d_model
-        
+
         # nhead 必须能整除 d_model
         if d_model == 64:
             nhead = 4  # 单变量优化版本
@@ -132,9 +133,9 @@ def load_model_and_config(model_path, config_path=None):
             nhead = 4
         else:
             nhead = 8
-        
+
         model = get_model(
-            'transformer',
+            "transformer",
             input_size=input_size,
             d_model=d_model,  # 使用推断的 d_model
             nhead=nhead,
@@ -142,32 +143,32 @@ def load_model_and_config(model_path, config_path=None):
             output_length=config.get("output_length", 4),
             dropout=config.get("dropout", 0.1),
         )
-        
+
         print(f"  Inferred: input_size={input_size}, d_model={d_model}, nhead={nhead}")
 
-    elif model_name == 'cnn':
+    elif model_name == "cnn":
         # 从config读取
         model = get_model(
-            'cnn',
+            "cnn",
             input_channels=config.get("input_channels", 1),
             input_length=config.get("input_length", 12),
             output_length=config.get("output_length", 4),
             hidden_channels=config.get("hidden_size", 64),
         )
 
-    elif model_name == 'convlstm':
+    elif model_name == "convlstm":
         model = get_model(
-            'convlstm',
+            "convlstm",
             input_channels=config.get("input_channels", 1),
             hidden_channels=config.get("hidden_size", 64),
             num_layers=config.get("num_layers", 2),
             output_length=config.get("output_length", 4),
         )
 
-    elif model_name == 'diffusion':
+    elif model_name == "diffusion":
         # 加载diffusion模型
         from src.models.diffusion import DiffusionWeatherModel, DiffusionTrainer
-        
+
         model = DiffusionWeatherModel(
             input_channels=config.get("input_channels", 1),
             output_channels=config.get("output_channels", 1),
@@ -177,11 +178,11 @@ def load_model_and_config(model_path, config_path=None):
             beta_schedule=config.get("beta_schedule", "cosine"),
             num_timesteps=config.get("num_diffusion_steps", 1000),
         )
-        
+
         # Diffusion使用专门的trainer
         trainer = DiffusionTrainer(model, use_ema=config.get("use_ema", True))
         trainer.load_checkpoint(model_path)
-        
+
         return model, trainer, config, data_format
 
     else:
@@ -225,6 +226,7 @@ def generate_predictions(
 
     # 预测（Diffusion模型需要num_inference_steps）
     from src.models.diffusion import DiffusionTrainer
+
     if isinstance(trainer, DiffusionTrainer) and num_inference_steps is not None:
         y_pred = trainer.predict(X, num_inference_steps=num_inference_steps)
     else:
@@ -238,7 +240,9 @@ def generate_predictions(
         "y_pred": y_pred,
         "features": feature_names,
         "data_format": data_format,
-        "spatial_shape": data_loader.spatial_shape if data_format == 'spatial' else None,
+        "spatial_shape": (
+            data_loader.spatial_shape if data_format == "spatial" else None
+        ),
     }
 
 
@@ -251,32 +255,36 @@ def save_predictions_netcdf(results, output_path, start_time=None):
     features = results["features"]
     data_format = results["data_format"]
 
-    if data_format == 'spatial':
+    if data_format == "spatial":
         # Spatial格式: (samples, lead_time, channels, H, W)
         n_samples, n_lead_times, n_channels, H, W = y_pred.shape
-        
+
         # 创建空间坐标
         lat = np.linspace(-90, 90, H)
         lon = np.linspace(0, 360, W)
-        
+
         # 为每个通道创建变量
         data_vars = {}
         for c in range(n_channels):
             # 假设channel对应features
             var_name = features[c] if c < len(features) else f"var_{c}"
-            data_vars[f"{var_name}_pred"] = (["time", "lead_time", "lat", "lon"], 
-                                            y_pred[:, :, c, :, :])
-            data_vars[f"{var_name}_true"] = (["time", "lead_time", "lat", "lon"], 
-                                            y_true[:, :, c, :, :])
-        
+            data_vars[f"{var_name}_pred"] = (
+                ["time", "lead_time", "lat", "lon"],
+                y_pred[:, :, c, :, :],
+            )
+            data_vars[f"{var_name}_true"] = (
+                ["time", "lead_time", "lat", "lon"],
+                y_true[:, :, c, :, :],
+            )
+
         # Lead times
         lead_times = np.arange(1, n_lead_times + 1) * 6  # hours
-        
+
         if start_time is not None:
-            times = pd.date_range(start_time, periods=n_samples, freq='6H')
+            times = pd.date_range(start_time, periods=n_samples, freq="6H")
         else:
             times = np.arange(n_samples)
-        
+
         ds = xr.Dataset(
             data_vars,
             coords={
@@ -286,23 +294,23 @@ def save_predictions_netcdf(results, output_path, start_time=None):
                 "lon": lon,
             },
         )
-        
+
     else:
         # Flat格式: (samples, lead_time, features)
         n_samples, n_lead_times, n_features = y_pred.shape
-        
+
         data_vars = {}
         for i, var_name in enumerate(features):
             data_vars[f"{var_name}_pred"] = (["time", "lead_time"], y_pred[:, :, i])
             data_vars[f"{var_name}_true"] = (["time", "lead_time"], y_true[:, :, i])
-        
+
         lead_times = np.arange(1, n_lead_times + 1) * 6
-        
+
         if start_time is not None:
-            times = pd.date_range(start_time, periods=n_samples, freq='6H')
+            times = pd.date_range(start_time, periods=n_samples, freq="6H")
         else:
             times = np.arange(n_samples)
-        
+
         ds = xr.Dataset(
             data_vars,
             coords={
@@ -316,7 +324,7 @@ def save_predictions_netcdf(results, output_path, start_time=None):
     ds.attrs["source"] = "Deep Learning Weather Model"
     ds.attrs["creation_date"] = datetime.now().isoformat()
     ds.attrs["data_format"] = data_format
-    
+
     # 保存
     ds.to_netcdf(output_path)
     print(f"✓ Saved to {output_path}")
@@ -357,12 +365,12 @@ def main():
     # 2. 生成预测
     # 从config读取变量列表（如果有的话）
     variables = config.get("variables", ["2m_temperature"])
-    
+
     # 设置推理步数（仅对diffusion模型有效）
     num_inference_steps = args.num_inference_steps
     if num_inference_steps is None and config.get("model") == "diffusion":
         num_inference_steps = config.get("num_inference_steps", 50)
-    
+
     results = generate_predictions(
         trainer,
         args.data_path,
@@ -376,7 +384,7 @@ def main():
 
     # 3. 保存
     start_time = args.time_slice.split(":")[0] if ":" in args.time_slice else None
-    
+
     if args.format == "netcdf":
         save_predictions_netcdf(results, args.output, start_time=start_time)
     elif args.format == "numpy":
@@ -386,19 +394,19 @@ def main():
     print("\n" + "=" * 80)
     print("Quick Evaluation")
     print("=" * 80)
-    
+
     y_true = results["y_true"]
     y_pred = results["y_pred"]
-    
+
     rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
     mae = np.mean(np.abs(y_true - y_pred))
-    
+
     # 按lead time计算
     n_lead = y_true.shape[1]
     for t in range(n_lead):
         rmse_t = np.sqrt(np.mean((y_true[:, t] - y_pred[:, t]) ** 2))
         print(f"  Lead time {t+1}: RMSE = {rmse_t:.4f}")
-    
+
     print(f"\nOverall:")
     print(f"  RMSE: {rmse:.4f}")
     print(f"  MAE:  {mae:.4f}")

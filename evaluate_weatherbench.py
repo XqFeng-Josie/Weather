@@ -59,43 +59,53 @@ def load_predictions(pred_path):
 
     if pred_path.suffix == ".nc":
         ds = xr.open_dataset(pred_path)
-        
+
         # 提取pred和true变量
-        pred_vars = [v for v in ds.data_vars if v.endswith('_pred')]
-        
+        pred_vars = [v for v in ds.data_vars if v.endswith("_pred")]
+
         y_pred_list = []
         y_true_list = []
         var_names = []
-        
+
         for pv in pred_vars:
-            var_name = pv.replace('_pred', '')
+            var_name = pv.replace("_pred", "")
             tv = f"{var_name}_true"
-            
+
             if tv in ds.data_vars:
                 y_pred_list.append(ds[pv].values)
                 y_true_list.append(ds[tv].values)
                 var_names.append(var_name)
-        
+
         # 确定数据格式
         if len(y_pred_list[0].shape) == 4:  # (time, lead_time, lat, lon)
-            data_format = 'spatial'
+            data_format = "spatial"
             # Stack: (time, lead_time, channels, lat, lon)
-            y_pred = np.stack([yp.transpose(0, 1, 2, 3) if yp.ndim == 4 else yp 
-                             for yp in y_pred_list], axis=2)
-            y_true = np.stack([yt.transpose(0, 1, 2, 3) if yt.ndim == 4 else yt 
-                             for yt in y_true_list], axis=2)
+            y_pred = np.stack(
+                [
+                    yp.transpose(0, 1, 2, 3) if yp.ndim == 4 else yp
+                    for yp in y_pred_list
+                ],
+                axis=2,
+            )
+            y_true = np.stack(
+                [
+                    yt.transpose(0, 1, 2, 3) if yt.ndim == 4 else yt
+                    for yt in y_true_list
+                ],
+                axis=2,
+            )
         else:  # (time, lead_time)
-            data_format = 'flat'
+            data_format = "flat"
             y_pred = np.stack(y_pred_list, axis=2)
             y_true = np.stack(y_true_list, axis=2)
-        
+
         return {
             "y_pred": y_pred,
             "y_true": y_true,
             "features": var_names,
             "data_format": data_format,
         }
-        
+
     elif pred_path.suffix == ".npz":
         data = np.load(pred_path, allow_pickle=True)
         return {
@@ -111,32 +121,36 @@ def load_predictions(pred_path):
 def evaluate_by_lead_time(y_pred, y_true, data_format):
     """
     按lead time评估
-    
+
     支持两种格式:
     - flat: (samples, lead_time, features)
     - spatial: (samples, lead_time, channels, H, W)
     """
-    if data_format == 'spatial':
+    if data_format == "spatial":
         # Spatial: 对H,W维度求平均后计算指标
         n_samples, n_lead_times, n_channels, H, W = y_pred.shape
         n_features = n_channels
-        
+
         # 计算空间平均
-        y_pred_mean = y_pred.reshape(n_samples, n_lead_times, n_channels, -1).mean(axis=-1)
-        y_true_mean = y_true.reshape(n_samples, n_lead_times, n_channels, -1).mean(axis=-1)
-        
+        y_pred_mean = y_pred.reshape(n_samples, n_lead_times, n_channels, -1).mean(
+            axis=-1
+        )
+        y_true_mean = y_true.reshape(n_samples, n_lead_times, n_channels, -1).mean(
+            axis=-1
+        )
+
     else:
         # Flat
         n_samples, n_lead_times, n_features = y_pred.shape
         y_pred_mean = y_pred
         y_true_mean = y_true
-    
+
     metrics = {
         "rmse": np.zeros((n_lead_times, n_features)),
         "mae": np.zeros((n_lead_times, n_features)),
         "bias": np.zeros((n_lead_times, n_features)),
     }
-    
+
     # 原始数据的指标（包含所有空间点）
     metrics_raw = {
         "rmse": np.zeros(n_lead_times),
@@ -147,7 +161,7 @@ def evaluate_by_lead_time(y_pred, y_true, data_format):
         # 整体指标
         metrics_raw["rmse"][t] = np.sqrt(np.mean((y_pred[:, t] - y_true[:, t]) ** 2))
         metrics_raw["mae"][t] = np.mean(np.abs(y_pred[:, t] - y_true[:, t]))
-        
+
         # 按变量/通道的指标
         for f in range(n_features):
             pred = y_pred_mean[:, t, f]
@@ -156,7 +170,7 @@ def evaluate_by_lead_time(y_pred, y_true, data_format):
             metrics["rmse"][t, f] = np.sqrt(np.mean((pred - true) ** 2))
             metrics["mae"][t, f] = np.mean(np.abs(pred - true))
             metrics["bias"][t, f] = np.mean(pred - true)
-    
+
     metrics["rmse_raw"] = metrics_raw["rmse"]
     metrics["mae_raw"] = metrics_raw["mae"]
 
@@ -222,7 +236,7 @@ def plot_error_distribution(y_pred, y_true, variable_names, output_path, data_fo
         ax = axes[i]
 
         # 提取第一个lead time的误差
-        if data_format == 'spatial':
+        if data_format == "spatial":
             # (samples, lead_time, channels, H, W)
             if i < errors.shape[2]:
                 error_flat = errors[:, 0, i].flatten()
@@ -254,37 +268,40 @@ def plot_spatial_error(y_pred, y_true, variable_idx, output_path):
     """绘制空间误差图 (仅spatial格式)"""
     if len(y_pred.shape) != 5:
         return
-    
+
     # (samples, lead_time, channels, H, W)
     sample_idx = 0
     lead_idx = 0
-    
+
     if variable_idx >= y_pred.shape[2]:
         return
-    
-    error = y_pred[sample_idx, lead_idx, variable_idx] - y_true[sample_idx, lead_idx, variable_idx]
-    
+
+    error = (
+        y_pred[sample_idx, lead_idx, variable_idx]
+        - y_true[sample_idx, lead_idx, variable_idx]
+    )
+
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    
+
     # True
-    im = axes[0].imshow(y_true[sample_idx, lead_idx, variable_idx], cmap='RdBu_r')
-    axes[0].set_title('Ground Truth')
+    im = axes[0].imshow(y_true[sample_idx, lead_idx, variable_idx], cmap="RdBu_r")
+    axes[0].set_title("Ground Truth")
     plt.colorbar(im, ax=axes[0])
-    
+
     # Pred
-    im = axes[1].imshow(y_pred[sample_idx, lead_idx, variable_idx], cmap='RdBu_r')
-    axes[1].set_title('Prediction')
+    im = axes[1].imshow(y_pred[sample_idx, lead_idx, variable_idx], cmap="RdBu_r")
+    axes[1].set_title("Prediction")
     plt.colorbar(im, ax=axes[1])
-    
+
     # Error
-    im = axes[2].imshow(error, cmap='seismic')
-    axes[2].set_title('Error (Pred - True)')
+    im = axes[2].imshow(error, cmap="seismic")
+    axes[2].set_title("Error (Pred - True)")
     plt.colorbar(im, ax=axes[2])
-    
+
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
-    
+
     print(f"✓ Spatial error plot saved to {output_path}")
 
 
@@ -323,7 +340,7 @@ def main():
             if f < metrics["rmse"].shape[1]:
                 print(f"{var}={metrics['rmse'][t, f]:.4f} ", end="")
         print()
-    
+
     if "rmse_raw" in metrics:
         print("\nOverall RMSE (all points):")
         for t in range(len(metrics["rmse_raw"])):
@@ -337,7 +354,7 @@ def main():
         baseline_metrics = evaluate_by_lead_time(
             baseline_data["y_pred"],
             baseline_data["y_true"],
-            baseline_data["data_format"]
+            baseline_data["data_format"],
         )
 
     # 4. 可视化
@@ -350,14 +367,16 @@ def main():
 
     # 误差分布
     plot_error_distribution(
-        y_pred, y_true, variable_names, output_dir / "error_distribution.png", data_format
+        y_pred,
+        y_true,
+        variable_names,
+        output_dir / "error_distribution.png",
+        data_format,
     )
-    
+
     # 空间误差图 (仅spatial格式)
-    if data_format == 'spatial' and len(variable_names) > 0:
-        plot_spatial_error(
-            y_pred, y_true, 0, output_dir / "spatial_error.png"
-        )
+    if data_format == "spatial" and len(variable_names) > 0:
+        plot_spatial_error(y_pred, y_true, 0, output_dir / "spatial_error.png")
 
     # 5. 保存指标
     metrics_dict = {
@@ -369,7 +388,7 @@ def main():
             "bias": metrics["bias"].tolist(),
         },
     }
-    
+
     if "rmse_raw" in metrics:
         metrics_dict["model"]["rmse_overall"] = metrics["rmse_raw"].tolist()
         metrics_dict["model"]["mae_overall"] = metrics["mae_raw"].tolist()

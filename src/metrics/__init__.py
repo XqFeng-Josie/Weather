@@ -17,12 +17,11 @@ from .probabilistic import (
 )
 
 __all__ = [
-    'crps_ensemble',
-    'crps_gaussian',
-    'ensemble_spread',
-    'spread_skill_ratio',
-    'rank_histogram',
-    'continuous_ranked_probability_score_summary',
-    'probabilistic_evaluation_report',
+    "crps_ensemble",
+    "crps_gaussian",
+    "ensemble_spread",
+    "spread_skill_ratio",
+    "rank_histogram",
+    "continuous_ranked_probability_score_summary",
+    "probabilistic_evaluation_report",
 ]
-

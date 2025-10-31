@@ -1,18 +1,21 @@
 #!/bin/bash
 set -e
+# variables=geopotential,temperature,u_component_of_wind,v_component_of_wind,specific_humidity,2m_temperature,10m_u_component_of_wind,10m_v_component_of_wind,mean_sea_level_pressure,total_precipitation_6hr,total_precipitation_24hr,10m_wind_speed,wind_speed
 
 # ============ 参数配置 ============
-VARIABLES="2m_temperature"
-TIME_SLICE="2020-01-01:2020-12-31"
+VARIABLES="2m_temperature" # 2m_temperature,geopotential
+# TIME_SLICE="2020-01-01:2020-12-31"
+TIME_SLICE="2000-01-01:2016-12-31"
+PREDICTION_TIME_SLICE="2017-01-01:2018-12-31"
 EPOCHS=30
 BATCH_SIZE=32
 HIDDEN_SIZE=128
 NUM_LAYERS=2
 DROPOUT=0.2
-LR=0.001
+LR=0.0001
 INPUT_LENGTH=12
 OUTPUT_LENGTH=4
-OUTPUT_DIR="outputs/lstm_$VARIABLES"
+OUTPUT_DIR="outputs/long_lstm_$VARIABLES"
 # ============ 训练 ============
 echo "Training lstm..."
 python train.py \
@@ -35,7 +38,8 @@ echo "Model saved to: $OUTPUT_DIR"
 echo "Generating predictions..."
 python predict.py \
     --model-path $OUTPUT_DIR/best_model.pth \
-    --output $OUTPUT_DIR/predictions.nc
+    --output $OUTPUT_DIR/predictions.nc \
+    --time-slice $PREDICTION_TIME_SLICE
 
 # ============ 评估 ============
 echo "Evaluating with WeatherBench2..."
