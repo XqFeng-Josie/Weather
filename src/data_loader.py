@@ -60,8 +60,15 @@ class WeatherDataLoader:
         print(f"Time steps: {len(self.ds.time)}")
         return self.ds
 
-    def prepare_features(self, normalize: bool = True):
-        """准备特征数据"""
+    def prepare_features(self, normalize: bool = True, norm_params: dict = None):
+        """
+        准备特征数据
+
+        Args:
+            normalize: 是否进行归一化
+            norm_params: 外部归一化参数 {"mean": {...}, "std": {...}}
+                        如果提供，将使用这些参数而不是重新计算
+        """
         features = {}
 
         for var in self.variables:
@@ -72,23 +79,61 @@ class WeatherDataLoader:
             if "level" in data.dims:
                 data = data.sel(level=self.levels)
 
+            # 确保维度顺序为标准的 (time, latitude, longitude) 或 (time, level, latitude, longitude)
+            # xarray可能以 (time, longitude, latitude) 的顺序存储
+            if "latitude" in data.dims and "longitude" in data.dims:
+                # 检查当前维度顺序
+                dims = list(data.dims)
+                lon_idx = dims.index("longitude")
+                lat_idx = dims.index("latitude")
+
+                # 如果longitude在latitude之前，需要转置
+                if lon_idx < lat_idx:
+                    print(f"  转置维度: {dims} -> 将 latitude 移到 longitude 之前")
+                    # 构建目标维度顺序：time, [level], latitude, longitude
+                    if "level" in dims:
+                        target_dims = ["time", "level", "latitude", "longitude"]
+                    else:
+                        target_dims = ["time", "latitude", "longitude"]
+                    data = data.transpose(*target_dims)
+                    print(f"  转置后形状: {data.shape}")
+
             features[var] = data
 
-        # 记录空间形状
+        # 记录空间形状（标准顺序：latitude, longitude）
         first_var = list(features.values())[0]
         if "latitude" in first_var.dims and "longitude" in first_var.dims:
             self.spatial_shape = (len(first_var.latitude), len(first_var.longitude))
-            print(f"Spatial shape: {self.spatial_shape}")
+            print(f"Spatial shape (lat, lon): {self.spatial_shape}")
 
         # 转换为numpy并标准化
         if normalize:
-            self.mean = {}
-            self.std = {}
+            if norm_params is not None:
+                # 使用外部提供的归一化参数（预测时）
+                self.mean = norm_params["mean"]
+                self.std = norm_params["std"]
+                print("Using provided normalization parameters (from training)")
+                for var in features.keys():
+                    if var in self.mean:
+                        print(
+                            f"  {var}: mean={self.mean[var]:.4f}, std={self.std[var]:.4f}"
+                        )
+            else:
+                # 计算归一化参数（训练时）
+                self.mean = {}
+                self.std = {}
+                print("Computing normalization parameters from data")
+                for var, data in features.items():
+                    values = data.values
+                    self.mean[var] = np.nanmean(values)
+                    self.std[var] = np.nanstd(values)
+                    print(
+                        f"  {var}: mean={self.mean[var]:.4f}, std={self.std[var]:.4f}"
+                    )
 
+            # 应用归一化
             for var, data in features.items():
                 values = data.values
-                self.mean[var] = np.nanmean(values)
-                self.std[var] = np.nanstd(values)
                 features[var] = (values - self.mean[var]) / (self.std[var] + 1e-8)
         else:
             features = {k: v.values for k, v in features.items()}
@@ -200,9 +245,15 @@ class WeatherDataLoader:
         """
         创建保留空间结构的序列
 
+        注意：数据已经在 prepare_features 中转置为标准维度顺序
+        - (time, latitude, longitude) 对应 (time, H, W)
+        - (time, level, latitude, longitude) 对应 (time, level, H, W)
+        其中 H=纬度数, W=经度数
+
         Returns:
             X: (n_samples, input_length, n_channels, H, W)
             y: (n_samples, output_length, n_channels, H, W)
+            其中 H=latitude维度, W=longitude维度
         """
         # 处理每个变量，保留空间结构
         channel_list = []
@@ -212,9 +263,11 @@ class WeatherDataLoader:
             if len(data.shape) == 4:  # (time, level, lat, lon)
                 # 将level维度当作通道
                 n_time, n_level, H, W = data.shape
-                # 重排为 (time, level, H, W)
+                # 数据已经是 (time, level, lat, lon) 顺序
                 data_spatial = data
-                print(f"  -> spatial shape: {data_spatial.shape} ({n_level} channels)")
+                print(
+                    f"  -> spatial shape: {data_spatial.shape} ({n_level} channels, H={H} lat, W={W} lon)"
+                )
 
                 # 将每个level当作一个通道
                 for level_idx in range(n_level):
@@ -222,17 +275,21 @@ class WeatherDataLoader:
 
             elif len(data.shape) == 3:  # (time, lat, lon)
                 # 单通道
-                print(f"  -> spatial shape: {data.shape} (1 channel)")
+                H, W = data.shape[1], data.shape[2]
+                print(
+                    f"  -> spatial shape: {data.shape} (1 channel, H={H} lat, W={W} lon)"
+                )
                 channel_list.append(data)
             else:
                 raise ValueError(f"Cannot handle shape {data.shape} for spatial format")
 
         # 堆叠为 (time, n_channels, H, W)
+        # 其中 H=latitude数, W=longitude数
         all_channels = np.stack(channel_list, axis=1)
         n_time, n_channels, H, W = all_channels.shape
 
         print(f"\nTotal spatial shape: {all_channels.shape}")
-        print(f"  {n_channels} channels, {H}x{W} spatial grid")
+        print(f"  {n_channels} channels, {H}(lat) x {W}(lon) spatial grid")
 
         # 创建滑动窗口样本
         X, y = [], []

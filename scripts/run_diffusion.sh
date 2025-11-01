@@ -1,9 +1,11 @@
 #!/bin/bash
 set -e
+ export CUDA_VISIBLE_DEVICES=8
 
 # ============ 参数配置 ============
 VARIABLES="2m_temperature"
-TIME_SLICE="2019-01-01:2020-12-31"
+TIME_SLICE="2000-01-01:2016-12-31"
+PREDICTION_TIME_SLICE="2017-01-01:2018-12-31"
 EPOCHS=200
 BATCH_SIZE=16
 LR=5e-5
@@ -31,17 +33,25 @@ python train_diffusion.py \
 
 echo "Model saved to: $OUTPUT_DIR"
 
-# ============ 预测 ============
-echo "Generating predictions..."
+# ============ 预测 + 可视化 ============
+echo "Generating predictions and visualizations..."
 python predict.py \
     --model-path $OUTPUT_DIR/best_model.pth \
-    --output $OUTPUT_DIR/predictions.nc
+    --output $OUTPUT_DIR/predictions.nc \
+    --time-slice $PREDICTION_TIME_SLICE \
+    --num-inference-steps $NUM_INFERENCE_STEPS \
+    --visualize \
+    --save-predictions
 
 # ============ 评估 ============
-echo "Evaluating with WeatherBench2..."
-python evaluate_weatherbench.py \
-    --pred $OUTPUT_DIR/predictions.nc \
-    --output-dir $OUTPUT_DIR/wb2_eval
+# echo "Evaluating with WeatherBench2..."
+# python evaluate_weatherbench.py \
+#     --pred $OUTPUT_DIR/predictions.nc \
+#     --output-dir $OUTPUT_DIR/wb2_eval
 
 echo "✓ Complete! Results in: $OUTPUT_DIR"
+echo "  - Model: $OUTPUT_DIR/best_model.pth"
+echo "  - Predictions: $OUTPUT_DIR/predictions.nc"
+echo "  - Visualizations: $OUTPUT_DIR/predictions_*.png"
+echo "  - Metrics: $OUTPUT_DIR/prediction_metrics.json"
 

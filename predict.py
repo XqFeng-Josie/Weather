@@ -15,6 +15,11 @@ import pandas as pd
 from src.data_loader import WeatherDataLoader
 from src.models import get_model
 from src.trainer import WeatherTrainer
+from src.visualization import (
+    visualize_predictions_improved,
+    compute_metrics,
+    compute_variable_wise_metrics,
+)
 
 
 # 模型数据格式映射
@@ -63,6 +68,16 @@ def parse_args():
         default=None,
         help="Number of inference steps for diffusion models (default: use model's default)",
     )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Generate visualization plots",
+    )
+    parser.add_argument(
+        "--save-predictions",
+        action="store_true",
+        help="Save y_pred and y_true as numpy files for later analysis",
+    )
 
     return parser.parse_args()
 
@@ -105,7 +120,6 @@ def load_model_and_config(model_path, config_path=None):
     if model_name == "lstm":
         first_weight = state_dict["lstm.weight_ih_l0"]
         input_size = first_weight.shape[1]
-
         # 从权重推断 hidden_size
         # weight_ih_l0 形状是 [4*hidden_size, input_size] (LSTM有4个门)
         hidden_size = first_weight.shape[0] // 4
@@ -114,9 +128,9 @@ def load_model_and_config(model_path, config_path=None):
             "lstm",
             input_size=input_size,
             hidden_size=hidden_size,  # 使用推断的 hidden_size
-            num_layers=config.get("num_layers", 2),
-            output_length=config.get("output_length", 4),
-            dropout=config.get("dropout", 0.2),
+            num_layers=config.get("num_layers"),
+            output_length=config.get("output_length"),
+            dropout=config.get("dropout"),
         )
 
         print(f"  Inferred: input_size={input_size}, hidden_size={hidden_size}")
@@ -204,6 +218,7 @@ def generate_predictions(
     input_length=12,
     output_length=4,
     num_inference_steps=None,
+    norm_params=None,
 ):
     """生成预测"""
     print(f"\nGenerating predictions (format: {data_format})...")
@@ -213,8 +228,8 @@ def generate_predictions(
     start, end = time_slice.split(":")
     ds = data_loader.load_data(time_slice=slice(start, end))
 
-    # 准备特征
-    features = data_loader.prepare_features(normalize=True)
+    # 准备特征（使用训练时的归一化参数）
+    features = data_loader.prepare_features(normalize=True, norm_params=norm_params)
 
     # 创建序列（根据数据格式）
     X, y_true = data_loader.create_sequences(
@@ -233,6 +248,38 @@ def generate_predictions(
         y_pred = trainer.predict(X)
 
     print(f"Prediction shape: {y_pred.shape}")
+    
+    # 获取空间坐标（如果是空间数据）
+    spatial_coords = None
+    if data_format == "spatial":
+        H, W = data_loader.spatial_shape
+        print(f"Spatial shape: H={H}, W={W}")
+        
+        if hasattr(ds, 'latitude') and hasattr(ds, 'longitude'):
+            lat_values = ds.latitude.values
+            lon_values = ds.longitude.values
+            print(f"Dataset coords: lat={len(lat_values)}, lon={len(lon_values)}")
+            
+            # 验证坐标长度是否匹配
+            if len(lat_values) == H and len(lon_values) == W:
+                spatial_coords = {
+                    'lat': lat_values,
+                    'lon': lon_values,
+                }
+                print("Using dataset coordinates")
+            else:
+                print(f"Warning: Coordinate mismatch. Using default coordinates.")
+                spatial_coords = {
+                    'lat': np.linspace(-90, 90, H),
+                    'lon': np.linspace(0, 360, W),
+                }
+        else:
+            # 默认坐标
+            print("Dataset has no coordinates. Using default coordinates.")
+            spatial_coords = {
+                'lat': np.linspace(-90, 90, H),
+                'lon': np.linspace(0, 360, W),
+            }
 
     return {
         "X": X,
@@ -243,6 +290,7 @@ def generate_predictions(
         "spatial_shape": (
             data_loader.spatial_shape if data_format == "spatial" else None
         ),
+        "spatial_coords": spatial_coords,
     }
 
 
@@ -281,7 +329,7 @@ def save_predictions_netcdf(results, output_path, start_time=None):
         lead_times = np.arange(1, n_lead_times + 1) * 6  # hours
 
         if start_time is not None:
-            times = pd.date_range(start_time, periods=n_samples, freq="6H")
+            times = pd.date_range(start_time, periods=n_samples, freq="6h")
         else:
             times = np.arange(n_samples)
 
@@ -307,7 +355,7 @@ def save_predictions_netcdf(results, output_path, start_time=None):
         lead_times = np.arange(1, n_lead_times + 1) * 6
 
         if start_time is not None:
-            times = pd.date_range(start_time, periods=n_samples, freq="6H")
+            times = pd.date_range(start_time, periods=n_samples, freq="6h")
         else:
             times = np.arange(n_samples)
 
@@ -371,6 +419,12 @@ def main():
     if num_inference_steps is None and config.get("model") == "diffusion":
         num_inference_steps = config.get("num_inference_steps", 50)
 
+    # 获取归一化参数（关键！）
+    norm_params = config.get("normalization", None)
+    if norm_params is None:
+        print("\n⚠️  WARNING: No normalization parameters found in config!")
+        print("   Predictions may be inaccurate. Please retrain the model.")
+    
     results = generate_predictions(
         trainer,
         args.data_path,
@@ -380,6 +434,7 @@ def main():
         input_length=config.get("input_length", 12),
         output_length=config.get("output_length", 4),
         num_inference_steps=num_inference_steps,
+        norm_params=norm_params,
     )
 
     # 3. 保存
@@ -390,26 +445,77 @@ def main():
     elif args.format == "numpy":
         save_predictions_numpy(results, args.output)
 
-    # 4. 快速评估
+    # 4. 评估和可视化
     print("\n" + "=" * 80)
-    print("Quick Evaluation")
+    print("Evaluation")
     print("=" * 80)
 
     y_true = results["y_true"]
     y_pred = results["y_pred"]
-
-    rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
-    mae = np.mean(np.abs(y_true - y_pred))
-
-    # 按lead time计算
-    n_lead = y_true.shape[1]
-    for t in range(n_lead):
-        rmse_t = np.sqrt(np.mean((y_true[:, t] - y_pred[:, t]) ** 2))
+    
+    # 计算指标
+    metrics = compute_metrics(y_pred, y_true)
+    
+    print("\nOverall Metrics:")
+    print(f"  RMSE: {metrics['rmse']:.4f}")
+    print(f"  MAE:  {metrics['mae']:.4f}")
+    
+    print("\nPer Lead Time:")
+    for t in range(y_true.shape[1]):
+        rmse_t = metrics[f"rmse_step_{t+1}"]
         print(f"  Lead time {t+1}: RMSE = {rmse_t:.4f}")
-
-    print(f"\nOverall:")
-    print(f"  RMSE: {rmse:.4f}")
-    print(f"  MAE:  {mae:.4f}")
+    
+    # 多变量独立评估
+    if len(variables) > 1:
+        var_metrics = compute_variable_wise_metrics(
+            y_pred, y_true, len(variables), data_format
+        )
+        
+        print("\n" + "-" * 80)
+        print("Per-Variable Metrics")
+        print("-" * 80)
+        
+        for var_idx, var_name in enumerate(variables):
+            rmse = var_metrics.get(f"var_{var_idx}_rmse", 0)
+            mae = var_metrics.get(f"var_{var_idx}_mae", 0)
+            print(f"  {var_name}:")
+            print(f"    RMSE: {rmse:.4f}")
+            print(f"    MAE:  {mae:.4f}")
+        
+        # 合并到metrics字典
+        metrics.update(var_metrics)
+    
+    # 保存指标到文件
+    output_dir = Path(args.output).parent
+    metrics_path = output_dir / "prediction_metrics.json"
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    print(f"\n✓ Metrics saved to {metrics_path}")
+    
+    # 5. 可视化
+    if args.visualize:
+        print("\n" + "=" * 80)
+        print("Generating Visualizations")
+        print("=" * 80)
+        
+        model_name = config.get("model", "unknown")
+        
+        # 生成可视化（非重叠样本）
+        visualize_predictions_improved(
+            y_true, y_pred, metrics, variables, model_name, output_dir, data_format,
+            norm_params=norm_params,
+            spatial_coords=results.get("spatial_coords", None)
+        )
+        
+        print(f"\n✓ Visualizations saved to {output_dir}/")
+    
+    # 6. 保存预测结果（可选）
+    if args.save_predictions:
+        pred_dir = output_dir / "predictions_data"
+        pred_dir.mkdir(exist_ok=True)
+        np.save(pred_dir / "y_test.npy", y_true)
+        np.save(pred_dir / "y_test_pred.npy", y_pred)
+        print(f"✓ Predictions saved to {pred_dir}/")
 
     print("\n✓ Done!")
 

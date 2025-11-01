@@ -12,7 +12,7 @@ DROPOUT=0.2
 LR=0.0001
 INPUT_LENGTH=12
 OUTPUT_LENGTH=4
-OUTPUT_DIR="outputs/long_cnn_$VARIABLES"
+OUTPUT_DIR="outputs/cnn_$VARIABLES"
 
 # ============ 训练 ============
 echo "Training cnn..."
@@ -31,19 +31,24 @@ python train.py \
 # 获取最新输出目录
 echo "Model saved to: $OUTPUT_DIR"
 
-# ============ 预测 ============
-echo "Generating predictions..."
+# ============ 预测 + 可视化 ============
+echo "Generating predictions and visualizations..."
 python predict.py \
     --model-path $OUTPUT_DIR/best_model.pth \
     --output $OUTPUT_DIR/predictions.nc \
-    --time-slice $PREDICTION_TIME_SLICE
+    --time-slice $PREDICTION_TIME_SLICE \
+    --visualize \
+    --save-predictions
 
 # ============ 评估 ============
-echo "Evaluating with WeatherBench2..."
-python evaluate_weatherbench.py \
-    --pred $OUTPUT_DIR/predictions.nc \
-    --output-dir $OUTPUT_DIR/wb2_eval 
-    
+# echo "Evaluating with WeatherBench2..."
+# python evaluate_weatherbench.py \
+#     --pred $OUTPUT_DIR/predictions.nc \
+#     --output-dir $OUTPUT_DIR/wb2_eval
 
 echo "✓ Complete! Results in: $OUTPUT_DIR"
+echo "  - Model: $OUTPUT_DIR/best_model.pth"
+echo "  - Predictions: $OUTPUT_DIR/predictions.nc"
+echo "  - Visualizations: $OUTPUT_DIR/predictions_*.png"
+echo "  - Metrics: $OUTPUT_DIR/prediction_metrics.json"
 

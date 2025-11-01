@@ -222,6 +222,12 @@ def main():
     config["output_channels"] = int(n_channels)
     config["variables"] = variables
     config["n_params"] = int(n_params)
+    
+    # 保存归一化参数（关键！）
+    config["normalization"] = {
+        "mean": {k: float(v) for k, v in loader.mean.items()},
+        "std": {k: float(v) for k, v in loader.std.items()},
+    }
 
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
@@ -345,250 +351,39 @@ def main():
         "test_deterministic": test_metrics,
         "test_probabilistic": probabilistic_metrics,
     }
-    with open(output_dir / "metrics.json", "w") as f:
-        json.dump(metrics, f, indent=2)
-
-    np.save(output_dir / "y_test.npy", y_test)
-    np.save(output_dir / "y_test_pred.npy", y_test_pred)
-
-    # ========================================================================
-    # 5. 可视化
-    # ========================================================================
+    
+    # 打印指标摘要
     print("\n" + "=" * 80)
-    print("Visualization")
+    print("Metrics Summary")
     print("=" * 80)
+    print("\nDeterministic Metrics:")
+    for key, val in test_metrics.items():
+        print(f"  {key}: {val:.4f}")
+    
+    if probabilistic_metrics:
+        print("\nProbabilistic Metrics:")
+        for key, val in probabilistic_metrics.items():
+            if isinstance(val, (int, float)):
+                print(f"  {key}: {val:.4f}")
+    
+    # with open(output_dir / "metrics.json", "w") as f:
+    #     json.dump(metrics, f, indent=2)
 
-    import matplotlib.pyplot as plt
-
-    # 1. 训练历史
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(history["train_loss"], label="Train Loss", alpha=0.7)
-    ax.plot(history["val_loss"], label="Val Loss", alpha=0.7)
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Loss")
-    ax.set_title("Diffusion Model Training History")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    plt.savefig(output_dir / "training_history.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-    # 2. RMSE vs Lead Time
-    lead_times = list(range(1, args.output_length + 1))
-    rmses = [rmse_per_step[f"rmse_step_{i}"] for i in lead_times]
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(lead_times, rmses, "o-", linewidth=2, markersize=8)
-    ax.set_xlabel("Lead Time Step")
-    ax.set_ylabel("RMSE")
-    ax.set_title("Diffusion Model - RMSE vs Lead Time")
-    ax.grid(True, alpha=0.3)
-    plt.savefig(output_dir / "rmse_vs_leadtime.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-    # 3. 空间预测示例（第一个变量，第一个样本）
-    sample_idx = 0
-    var_idx = 0
-
-    fig, axes = plt.subplots(2, 4, figsize=(20, 10))
-    fig.suptitle(
-        f"Diffusion Model - Variable: {variables[var_idx]}",
-        fontsize=16,
-        fontweight="bold",
-    )
-
-    for t in range(min(4, args.output_length)):
-        # 真实值
-        ax_true = axes[0, t]
-        im = ax_true.imshow(y_test[sample_idx, t, var_idx], cmap="RdBu_r")
-        ax_true.set_title(f"True - Lead Time {t+1}")
-        plt.colorbar(im, ax=ax_true)
-
-        # 预测值
-        ax_pred = axes[1, t]
-        im = ax_pred.imshow(y_test_pred[sample_idx, t, var_idx], cmap="RdBu_r")
-        ax_pred.set_title(f"Pred - Lead Time {t+1}")
-        plt.colorbar(im, ax=ax_pred)
-
-    plt.tight_layout()
-    safe_var_name = variables[var_idx].replace("/", "_").replace(" ", "_")
-    plt.savefig(
-        output_dir / f"spatial_predictions_{safe_var_name}.png",
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.close()
-
-    # 4. 绘制时间序列（选择一个空间点）
-    H, W = y_test.shape[3], y_test.shape[4]
-    point_h, point_w = H // 2, W // 2  # 中心点
-
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-
-    for i, ax in enumerate(axes.flat):
-        if i >= min(4, args.output_length):
-            break
-
-        # 提取该时间步的空间点
-        sample_indices = np.linspace(0, len(y_test) - 1, 50, dtype=int)
-        y_true_point = y_test[sample_indices, i, var_idx, point_h, point_w]
-        y_pred_point = y_test_pred[sample_indices, i, var_idx, point_h, point_w]
-
-        ax.plot(y_true_point, "b-o", label="True", alpha=0.7, markersize=3)
-        ax.plot(y_pred_point, "r-s", label="Pred", alpha=0.7, markersize=3)
-        ax.set_title(f"Lead Time {i+1} (Point [{point_h}, {point_w}])")
-        ax.set_xlabel("Sample Index")
-        ax.set_ylabel("Normalized Value")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(output_dir / "point_predictions.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-    # ========================================================================
-    # 6. Ensemble 可视化 (如果启用)
-    # ========================================================================
-    if args.enable_ensemble_eval and ensemble_predictions is not None:
-        print("\nGenerating ensemble visualizations...")
-
-        # 6.1 Ensemble 成员散布图
-        sample_idx = 0
-        var_idx = 0
-        time_idx = 0
-        point_h, point_w = H // 2, W // 2
-
-        fig, axes = plt.subplots(1, 2, figsize=(15, 5))
-
-        # 左图：所有 ensemble 成员的空间分布
-        ax = axes[0]
-        for member_idx in range(min(5, args.num_ensemble_members)):
-            member_pred = ensemble_predictions[
-                member_idx, sample_idx, time_idx, var_idx
-            ]
-            ax.plot(member_pred[point_h, :], alpha=0.5, label=f"Member {member_idx+1}")
-
-        y_true_spatial = y_test[sample_idx, time_idx, var_idx]
-        ax.plot(
-            y_true_spatial[point_h, :],
-            "k-",
-            linewidth=2,
-            label="Observation",
-            alpha=0.8,
-        )
-        ax.set_title(f"Ensemble Spread (Spatial Profile at lat={point_h})")
-        ax.set_xlabel("Longitude")
-        ax.set_ylabel("Normalized Value")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        # 右图：Ensemble mean ± spread
-        ax = axes[1]
-        ensemble_mean = np.mean(
-            ensemble_predictions[:, sample_idx, time_idx, var_idx], axis=0
-        )
-        ensemble_std = np.std(
-            ensemble_predictions[:, sample_idx, time_idx, var_idx], axis=0
-        )
-
-        lon_range = np.arange(ensemble_mean.shape[1])
-        ax.plot(
-            lon_range,
-            ensemble_mean[point_h, :],
-            "r-",
-            linewidth=2,
-            label="Ensemble Mean",
-        )
-        ax.fill_between(
-            lon_range,
-            ensemble_mean[point_h, :] - ensemble_std[point_h, :],
-            ensemble_mean[point_h, :] + ensemble_std[point_h, :],
-            alpha=0.3,
-            color="red",
-            label="±1 std (spread)",
-        )
-        ax.plot(
-            lon_range,
-            y_true_spatial[point_h, :],
-            "k-",
-            linewidth=2,
-            label="Observation",
-            alpha=0.8,
-        )
-        ax.set_title("Ensemble Mean ± Spread")
-        ax.set_xlabel("Longitude")
-        ax.set_ylabel("Normalized Value")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.savefig(output_dir / "ensemble_spread.png", dpi=300, bbox_inches="tight")
-        plt.close()
-
-        # 6.2 CRPS vs Lead Time
-        if "crps_by_leadtime" in probabilistic_metrics:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            lead_times = list(
-                range(1, len(probabilistic_metrics["crps_by_leadtime"]) + 1)
-            )
-            ax.plot(
-                lead_times,
-                probabilistic_metrics["crps_by_leadtime"],
-                "o-",
-                linewidth=2,
-                markersize=8,
-                label="CRPS",
-                color="purple",
-            )
-
-            # 同时绘制 RMSE 作为对比
-            rmses_for_plot = [rmse_per_step[f"rmse_step_{i}"] for i in lead_times]
-            ax.plot(
-                lead_times,
-                rmses_for_plot,
-                "s--",
-                linewidth=2,
-                markersize=8,
-                label="RMSE (Deterministic)",
-                color="orange",
-                alpha=0.7,
-            )
-
-            ax.set_xlabel("Lead Time Step")
-            ax.set_ylabel("Score")
-            ax.set_title("CRPS vs RMSE by Lead Time (Lower is Better)")
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            plt.savefig(
-                output_dir / "crps_vs_leadtime.png", dpi=300, bbox_inches="tight"
-            )
-            plt.close()
-
-        # 6.3 不确定性地图（Ensemble Spread）
-        fig, axes = plt.subplots(1, 4, figsize=(20, 5))
-        fig.suptitle(
-            f"Ensemble Uncertainty (Spread) - Variable: {variables[var_idx]}",
-            fontsize=16,
-            fontweight="bold",
-        )
-
-        for t in range(min(4, args.output_length)):
-            ax = axes[t]
-            # 计算该时间步的 spread
-            spread_map = np.std(ensemble_predictions[:, sample_idx, t, var_idx], axis=0)
-            im = ax.imshow(spread_map, cmap="YlOrRd")
-            ax.set_title(f"Lead Time {t+1}\nSpread (std)")
-            plt.colorbar(im, ax=ax)
-
-        plt.tight_layout()
-        plt.savefig(
-            output_dir / "ensemble_uncertainty_map.png", dpi=300, bbox_inches="tight"
-        )
-        plt.close()
-
-        print("✓ Ensemble visualizations saved")
+    # np.save(output_dir / "y_test.npy", y_test)
+    # np.save(output_dir / "y_test_pred.npy", y_test_pred)
 
     print(f"\n✓ Results saved to {output_dir}")
     print(f"✓ Model saved to {output_dir}/best_model.pth")
+    
+    # 提示如何生成可视化
+    print(f"\nTo generate visualizations, run:")
+    test_time = args.time_slice.split(":")[-1]
+    next_year = str(int(test_time[:4]) + 1)
+    print(f"  python predict.py \\")
+    print(f"    --model-path {output_dir}/best_model.pth \\")
+    print(f"    --time-slice {next_year}-01-01:{next_year}-12-31 \\")
+    print(f"    --num-inference-steps {args.num_inference_steps} \\")
+    print(f"    --visualize --save-predictions")
 
 
 if __name__ == "__main__":

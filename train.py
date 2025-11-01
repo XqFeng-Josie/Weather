@@ -10,6 +10,7 @@
 """
 
 import argparse
+from tkinter import N
 import numpy as np
 from pathlib import Path
 import json
@@ -128,8 +129,6 @@ def create_model(args, data_info):
             hidden_channels=args.hidden_size,
         )
     elif model_name == "convlstm":
-        # ConvLSTM内存优化：使用更小的hidden_channels
-        # 空间数据保持2D结构，内存消耗远大于flat模型
         # convlstm_hidden = min(args.hidden_size, 64)  # 限制最大为64
         convlstm_hidden = args.hidden_size
         model = get_model(
@@ -154,26 +153,26 @@ def create_model(args, data_info):
             dropout=args.dropout,
         )
     elif model_name == "transformer":
-        # 单变量时使用更小的模型防止过拟合
-        if n_variables == 1:
-            d_model = 64  # 更小的模型
-            nhead = 4
-            num_layers = 2  # 减少层数
-            dropout = 0.3  # 更高dropout
-        else:
-            d_model = args.hidden_size
-            nhead = 8
-            num_layers = args.num_layers
-            dropout = args.dropout
+        # # 单变量时使用更小的模型防止过拟合
+        # if n_variables == 1:
+        #     d_model = 64  # 更小的模型
+        #     nhead = 4
+        #     num_layers = 2  # 减少层数
+        #     dropout = 0.3  # 更高dropout
+        # else:
+        #     d_model = args.hidden_size
+        #     nhead = 8
+        #     num_layers = args.num_layers
+        #     dropout = args.dropout
 
         model = get_model(
             "transformer",
             input_size=data_info["n_features"],
-            d_model=d_model,
-            nhead=nhead,
-            num_layers=num_layers,
+            d_model=args.hidden_size,
+            nhead=4 if n_variables == 1 else 8,
+            num_layers=args.num_layers,
             output_length=args.output_length,
-            dropout=dropout,
+            dropout=args.dropout,
         )
     else:
         raise ValueError(f"Unknown model: {model_name}")
@@ -276,6 +275,13 @@ def main():
     # 保存完整配置
     config["output_length"] = args.output_length
     config["variables"] = variables  # 保存变量列表，predict时使用
+    
+    # 保存归一化参数（关键！）
+    config["normalization"] = {
+        "mean": {k: float(v) for k, v in loader.mean.items()},
+        "std": {k: float(v) for k, v in loader.std.items()},
+    }
+    
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 
@@ -431,348 +437,27 @@ def main():
         "test": test_metrics,
     }
     metrics = convert_to_python_types(metrics)
+    # Print metrics
+    for key, val in metrics.items():
+        print(f"{key}:")
+        for k, v in val.items():
+            print(f"  {k}: {v:.4f}")
+        print()
 
-    with open(output_dir / "metrics.json", "w") as f:
-        json.dump(metrics, f, indent=2)
+    # with open(output_dir / "metrics.json", "w") as f:
+    #     json.dump(metrics, f, indent=2)
 
-    # 保存预测结果
-    np.save(output_dir / "y_test.npy", y_test)
-    np.save(output_dir / "y_test_pred.npy", y_test_pred)
+    # # 保存预测结果
+    # np.save(output_dir / "y_test.npy", y_test)
+    # np.save(output_dir / "y_test_pred.npy", y_test_pred)
 
-    # ========================================================================
-    # 5. 可视化
-    # ========================================================================
-    print("\n" + "=" * 80)
-    print("Visualization")
-    print("=" * 80)
-
-    import matplotlib.pyplot as plt
-
-    # 针对不同数据格式的可视化
-    if data_format == "flat":
-        visualize_flat_predictions(
-            y_test, y_test_pred, test_metrics, variables, args, output_dir
-        )
-    else:
-        visualize_spatial_predictions(
-            y_test, y_test_pred, test_metrics, variables, args, output_dir
-        )
 
     print(f"\n✓ Results saved to {output_dir}")
     print(f"✓ Model saved to {output_dir}/best_model.pth")
-
-
-def visualize_flat_predictions(
-    y_test, y_test_pred, test_metrics, variables, args, output_dir
-):
-    """可视化展平格式的预测结果（多变量）"""
-    import matplotlib.pyplot as plt
-
-    n_variables = len(variables)
-    n_features = y_test.shape[2]
-    grid_points_per_var = n_features // n_variables
-
-    # 为每个变量绘制预测图
-    for var_idx, var_name in enumerate(variables):
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle(f"Variable: {var_name}", fontsize=16, fontweight="bold")
-
-        # 该变量的第一个网格点索引
-        feature_idx = var_idx * grid_points_per_var
-
-        for i, ax in enumerate(axes.flat):
-            if i >= min(4, y_test.shape[1]):
-                break
-
-            # 选择几个样本
-            sample_idx = np.linspace(0, len(y_test) - 1, 50, dtype=int)
-
-            ax.plot(
-                y_test[sample_idx, i, feature_idx],
-                "b-o",
-                label="True",
-                alpha=0.7,
-                markersize=3,
-            )
-            ax.plot(
-                y_test_pred[sample_idx, i, feature_idx],
-                "r-s",
-                label="Pred",
-                alpha=0.7,
-                markersize=3,
-            )
-            ax.set_title(f"Lead Time {i+1} (Grid Point 0)")
-            ax.set_xlabel("Sample Index")
-            ax.set_ylabel("Normalized Value")
-            ax.set_xlim(left=0)  # 固定X轴起点为0，终点根据数据自动确定
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        safe_var_name = var_name.replace("/", "_").replace(" ", "_")
-        plt.savefig(
-            output_dir / f"predictions_{safe_var_name}.png",
-            dpi=300,
-            bbox_inches="tight",
-        )
-        plt.close()
-
-    # 绘制所有变量的汇总图
-    if n_variables > 1:
-        fig, axes = plt.subplots(n_variables, 2, figsize=(12, 4 * n_variables))
-        if n_variables == 1:
-            axes = axes.reshape(1, -1)
-
-        for var_idx, var_name in enumerate(variables):
-            feature_idx = var_idx * grid_points_per_var
-            sample_idx = np.linspace(0, len(y_test) - 1, 30, dtype=int)
-
-            # 第一个时间步
-            ax = axes[var_idx, 0]
-            ax.plot(
-                y_test[sample_idx, 0, feature_idx],
-                "b-o",
-                label="True",
-                alpha=0.7,
-                markersize=3,
-            )
-            ax.plot(
-                y_test_pred[sample_idx, 0, feature_idx],
-                "r-s",
-                label="Pred",
-                alpha=0.7,
-                markersize=3,
-            )
-            ax.set_title(f"{var_name} - Lead Time 1")
-            ax.set_xlabel("Sample")
-            ax.set_ylabel("Value")
-            ax.set_xlim(left=0)  # 固定X轴起点为0，终点根据数据自动确定
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-
-            # 最后一个时间步
-            ax = axes[var_idx, 1]
-            last_t = y_test.shape[1] - 1
-            ax.plot(
-                y_test[sample_idx, last_t, feature_idx],
-                "b-o",
-                label="True",
-                alpha=0.7,
-                markersize=3,
-            )
-            ax.plot(
-                y_test_pred[sample_idx, last_t, feature_idx],
-                "r-s",
-                label="Pred",
-                alpha=0.7,
-                markersize=3,
-            )
-            ax.set_title(f"{var_name} - Lead Time {last_t+1}")
-            ax.set_xlabel("Sample")
-            ax.set_ylabel("Value")
-            ax.set_xlim(left=0)  # 固定X轴起点为0，终点根据数据自动确定
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.savefig(
-            output_dir / "predictions_all_variables.png", dpi=300, bbox_inches="tight"
-        )
-        plt.close()
-
-    # 绘制RMSE per lead time（整体）
-    rmse_per_step = [test_metrics[f"rmse_step_{i+1}"] for i in range(y_test.shape[1])]
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(
-        range(1, len(rmse_per_step) + 1), rmse_per_step, "o-", linewidth=2, markersize=8
-    )
-    plt.xlabel("Lead Time Step")
-    plt.ylabel("RMSE (All Variables)")
-    plt.title(f"RMSE vs Lead Time - {args.model.upper()}")
-    plt.grid(True, alpha=0.3)
-    plt.savefig(output_dir / "rmse_vs_leadtime.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-
-def visualize_spatial_predictions(
-    y_test, y_test_pred, test_metrics, variables, args, output_dir
-):
-    """可视化空间格式的预测结果（多变量）"""
-    import matplotlib.pyplot as plt
-
-    # y_test shape: (n_samples, output_length, n_channels, H, W)
-    n_channels = y_test.shape[2]
-    n_variables = len(variables)
-    H, W = y_test.shape[3], y_test.shape[4]
-    point_h, point_w = H // 2, W // 2  # 中心点
-
-    # 确定每个变量对应的channel范围
-    if n_channels == n_variables:
-        # 简单情况：每个channel对应一个变量
-        var_channel_map = [(i, i) for i in range(n_variables)]
-    else:
-        # 复杂情况：多个channels属于一个变量
-        channels_per_var = n_channels // n_variables
-        var_channel_map = [
-            (i * channels_per_var, (i + 1) * channels_per_var)
-            for i in range(n_variables)
-        ]
-
-    # 为每个变量分别可视化
-    for var_idx, var_name in enumerate(variables):
-        start_ch, end_ch = var_channel_map[var_idx]
-        # 使用第一个channel代表该变量（如果有多个channels）
-        channel_idx = start_ch if n_channels == n_variables else start_ch
-
-        # 1. 空间场图
-        fig, axes = plt.subplots(2, 4, figsize=(20, 10))
-        fig.suptitle(f"Variable: {var_name}", fontsize=16, fontweight="bold")
-
-        sample_idx = 0
-
-        for t in range(min(4, y_test.shape[1])):
-            # 真实值
-            ax_true = axes[0, t]
-            im = ax_true.imshow(y_test[sample_idx, t, channel_idx], cmap="RdBu_r")
-            ax_true.set_title(f"True - Lead Time {t+1}")
-            plt.colorbar(im, ax=ax_true)
-
-            # 预测值
-            ax_pred = axes[1, t]
-            im = ax_pred.imshow(y_test_pred[sample_idx, t, channel_idx], cmap="RdBu_r")
-            ax_pred.set_title(f"Pred - Lead Time {t+1}")
-            plt.colorbar(im, ax=ax_pred)
-
-        plt.tight_layout()
-        safe_var_name = var_name.replace("/", "_").replace(" ", "_")
-        plt.savefig(
-            output_dir / f"spatial_predictions_{safe_var_name}.png",
-            dpi=300,
-            bbox_inches="tight",
-        )
-        plt.close()
-
-        # 2. 时间序列曲线图（每个变量单独的）
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle(
-            f"Variable: {var_name} - Time Series at Center Point",
-            fontsize=16,
-            fontweight="bold",
-        )
-
-        for i, ax in enumerate(axes.flat):
-            if i >= min(4, y_test.shape[1]):
-                break
-
-            # 提取该时间步的空间点
-            sample_indices = np.linspace(0, len(y_test) - 1, 50, dtype=int)
-            y_true_point = y_test[sample_indices, i, channel_idx, point_h, point_w]
-            y_pred_point = y_test_pred[sample_indices, i, channel_idx, point_h, point_w]
-
-            ax.plot(y_true_point, "b-o", label="True", alpha=0.7, markersize=3)
-            ax.plot(y_pred_point, "r-s", label="Pred", alpha=0.7, markersize=3)
-            ax.set_title(f"Lead Time {i+1}")
-            ax.set_xlabel("Sample Index")
-            ax.set_ylabel("Normalized Value")
-            ax.set_xlim(left=0)  # 固定X轴起点为0，终点根据数据自动确定
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.savefig(
-            output_dir / f"predictions_{safe_var_name}.png",
-            dpi=300,
-            bbox_inches="tight",
-        )
-        plt.close()
-
-    # 3. 多变量汇总图（如果有多个变量）
-    if n_variables > 1:
-        fig, axes = plt.subplots(n_variables, 2, figsize=(12, 4 * n_variables))
-        if n_variables == 1:
-            axes = axes.reshape(1, -1)
-
-        for var_idx, var_name in enumerate(variables):
-            start_ch, end_ch = var_channel_map[var_idx]
-            channel_idx = start_ch if n_channels == n_variables else start_ch
-
-            sample_indices = np.linspace(0, len(y_test) - 1, 30, dtype=int)
-
-            # 第一个时间步
-            ax = axes[var_idx, 0]
-            y_true_point = y_test[sample_indices, 0, channel_idx, point_h, point_w]
-            y_pred_point = y_test_pred[sample_indices, 0, channel_idx, point_h, point_w]
-            ax.plot(y_true_point, "b-o", label="True", alpha=0.7, markersize=3)
-            ax.plot(y_pred_point, "r-s", label="Pred", alpha=0.7, markersize=3)
-            ax.set_title(f"{var_name} - Lead Time 1")
-            ax.set_xlabel("Sample")
-            ax.set_ylabel("Value")
-            ax.set_xlim(left=0)  # 固定X轴起点为0，终点根据数据自动确定
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-
-            # 最后一个时间步
-            ax = axes[var_idx, 1]
-            last_t = y_test.shape[1] - 1
-            y_true_point = y_test[sample_indices, last_t, channel_idx, point_h, point_w]
-            y_pred_point = y_test_pred[
-                sample_indices, last_t, channel_idx, point_h, point_w
-            ]
-            ax.plot(y_true_point, "b-o", label="True", alpha=0.7, markersize=3)
-            ax.plot(y_pred_point, "r-s", label="Pred", alpha=0.7, markersize=3)
-            ax.set_title(f"{var_name} - Lead Time {last_t+1}")
-            ax.set_xlabel("Sample")
-            ax.set_ylabel("Value")
-            ax.set_xlim(left=0)  # 固定X轴起点为0，终点根据数据自动确定
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.savefig(
-            output_dir / "predictions_all_variables.png", dpi=300, bbox_inches="tight"
-        )
-        plt.close()
-
-    # 4. 统一的point predictions图（向后兼容）
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-
-    # 使用第一个变量
-    channel_idx = 0
-    for i, ax in enumerate(axes.flat):
-        if i >= min(4, y_test.shape[1]):
-            break
-
-        sample_indices = np.linspace(0, len(y_test) - 1, 50, dtype=int)
-        y_true_point = y_test[sample_indices, i, channel_idx, point_h, point_w]
-        y_pred_point = y_test_pred[sample_indices, i, channel_idx, point_h, point_w]
-
-        ax.plot(y_true_point, "b-o", label="True", alpha=0.7, markersize=3)
-        ax.plot(y_pred_point, "r-s", label="Pred", alpha=0.7, markersize=3)
-        ax.set_title(f"Lead Time {i+1} (Point [{point_h}, {point_w}])")
-        ax.set_xlabel("Sample Index")
-        ax.set_ylabel("Normalized Value")
-        ax.set_xlim(left=0)  # 固定X轴起点为0，终点根据数据自动确定
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(output_dir / "point_predictions.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-    # 3. RMSE per lead time
-    rmse_per_step = [test_metrics[f"rmse_step_{i+1}"] for i in range(y_test.shape[1])]
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(
-        range(1, len(rmse_per_step) + 1), rmse_per_step, "o-", linewidth=2, markersize=8
-    )
-    plt.xlabel("Lead Time Step")
-    plt.ylabel("RMSE")
-    plt.title(f"RMSE vs Lead Time ({args.model.upper()})")
-    plt.grid(True, alpha=0.3)
-    plt.savefig(output_dir / "rmse_vs_leadtime.png", dpi=300, bbox_inches="tight")
-    plt.close()
+    print(f"\nTo generate visualizations, run:")
+    test_time = config.get("time_slice", "2017-01-01:2018-12-31").split(":")[-1]
+    next_year = str(int(test_time[:4]) + 1)
+    print(f"  python predict.py --model-path {output_dir}/best_model.pth --time-slice {next_year}-01-01:{next_year}-12-31 --visualize --save-predictions")
 
 
 if __name__ == "__main__":
