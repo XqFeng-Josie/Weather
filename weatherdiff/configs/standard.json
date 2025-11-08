@@ -1,0 +1,28 @@
+{
+  "name": "standard",
+  "description": "标准训练配置（1年数据）",
+  
+  "data": {
+    "variable": "2m_temperature",
+    "time_slice": "2020-01-01:2020-12-31",
+    "normalization": "minmax",
+    "n_channels": 3,
+    "target_size": [512, 512]
+  },
+  
+  "model": {
+    "input_length": 4,
+    "output_length": 1,
+    "base_channels": 128,
+    "depth": 4
+  },
+  
+  "training": {
+    "batch_size": 16,
+    "epochs": 50,
+    "lr": 1e-4,
+    "weight_decay": 0.01,
+    "early_stopping": 10
+  }
+}
+

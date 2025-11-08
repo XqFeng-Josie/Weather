@@ -23,7 +23,7 @@ from src.visualization import (
 
 
 # 模型数据格式映射
-SPATIAL_MODELS = ["cnn", "convlstm", "diffusion"]
+SPATIAL_MODELS = ["cnn", "convlstm", "diffusion", "weather_transformer"]
 FLAT_MODELS = ["lr", "lr_multi", "lstm", "transformer"]
 
 
@@ -77,6 +77,12 @@ def parse_args():
         "--save-predictions",
         action="store_true",
         help="Save y_pred and y_true as numpy files for later analysis",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Batch size for prediction (default: auto, 32 for diffusion, 256 for others)",
     )
 
     return parser.parse_args()
@@ -179,6 +185,23 @@ def load_model_and_config(model_path, config_path=None):
             output_length=config.get("output_length", 4),
         )
 
+    elif model_name == "weather_transformer":
+        # 加载weather_transformer模型
+        from src.models.weather_transformer import WeatherTransformer
+
+        model = WeatherTransformer(
+            img_size=tuple(config.get("img_size", [32, 64])),
+            patch_size=tuple(config.get("patch_size", [4, 8])),
+            input_channels=config.get("input_channels", 1),
+            output_channels=config.get("output_channels", 1),
+            input_length=config.get("input_length", 12),
+            output_length=config.get("output_length", 4),
+            d_model=config.get("d_model", 128),
+            n_heads=config.get("n_heads", 4),
+            n_layers=config.get("n_layers", 4),
+            dropout=config.get("dropout", 0.1),
+        )
+
     elif model_name == "diffusion":
         # 加载diffusion模型
         from src.models.diffusion import DiffusionWeatherModel, DiffusionTrainer
@@ -219,6 +242,7 @@ def generate_predictions(
     output_length=4,
     num_inference_steps=None,
     norm_params=None,
+    batch_size=None,
 ):
     """生成预测"""
     print(f"\nGenerating predictions (format: {data_format})...")
@@ -239,13 +263,53 @@ def generate_predictions(
 
     print(f"Input shape: {X.shape}")
 
-    # 预测（Diffusion模型需要num_inference_steps）
+    # 预测（支持batch预测以节省内存）
     from src.models.diffusion import DiffusionTrainer
-
-    if isinstance(trainer, DiffusionTrainer) and num_inference_steps is not None:
-        y_pred = trainer.predict(X, num_inference_steps=num_inference_steps)
+    
+    # 判断是否需要batch预测
+    n_samples = X.shape[0]
+    
+    # 确定batch size
+    if batch_size is None:
+        # 自动选择batch size
+        if isinstance(trainer, DiffusionTrainer):
+            batch_size = 32  # Diffusion模型使用小batch
+            print(f"Using batch prediction for Diffusion model (batch_size={batch_size})")
+        else:
+            batch_size = 256  # 其他模型可以用大batch
     else:
-        y_pred = trainer.predict(X)
+        print(f"Using custom batch_size={batch_size}")
+    
+    # 如果样本数较少，直接一次预测
+    if n_samples <= batch_size:
+        if isinstance(trainer, DiffusionTrainer) and num_inference_steps is not None:
+            y_pred = trainer.predict(X, num_inference_steps=num_inference_steps)
+        else:
+            y_pred = trainer.predict(X)
+    else:
+        # 分batch预测
+        print(f"Predicting in batches ({n_samples} samples, batch_size={batch_size})...")
+        y_pred_list = []
+        
+        for i in range(0, n_samples, batch_size):
+            end_idx = min(i + batch_size, n_samples)
+            X_batch = X[i:end_idx]
+            
+            if isinstance(trainer, DiffusionTrainer) and num_inference_steps is not None:
+                y_pred_batch = trainer.predict(X_batch, num_inference_steps=num_inference_steps)
+            else:
+                y_pred_batch = trainer.predict(X_batch)
+            
+            y_pred_list.append(y_pred_batch)
+            
+            # 打印进度
+            print(f"  Batch {i//batch_size + 1}/{(n_samples + batch_size - 1)//batch_size}: "
+                  f"samples {i} to {end_idx-1}")
+        
+        # 合并所有batch的结果
+        import numpy as np
+        y_pred = np.concatenate(y_pred_list, axis=0)
+        print(f"✓ Batch prediction completed")
 
     print(f"Prediction shape: {y_pred.shape}")
     
@@ -435,6 +499,7 @@ def main():
         output_length=config.get("output_length", 4),
         num_inference_steps=num_inference_steps,
         norm_params=norm_params,
+        batch_size=args.batch_size,
     )
 
     # 3. 保存

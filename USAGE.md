@@ -1,178 +1,405 @@
 # 使用指南
 
-## 快速开始
+## 环境配置
 
-### 1. 安装依赖
-
-```
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-### 2. 数据集说明
-
-**重要**：尽管数据集路径名为 `1959-2022-6h-64x32`，但实际数据只到 **2021-12-31**。
-可用时间范围：`1959-01-01` 到 `2021-12-31`
-
-## 常用预测变量
-
-| 变量名 | 说明 | 维度 |
-|--------|------|------|
-| `2m_temperature` | 2米温度 | (time, lat, lon) |
-| `geopotential` | 位势高度 | (time, level, lat, lon) |
-| `10m_u_component_of_wind` | 10米U风 | (time, lat, lon) |
-| `10m_v_component_of_wind` | 10米V风 | (time, lat, lon) |
-| `specific_humidity` | 比湿 | (time, level, lat, lon) |
-
-完整变量列表见 [WeatherBench2](https://weatherbench2.readthedocs.io/)
-
-## 模型选择
-
-### 单变量预测
-- **推荐**：`lstm`, `convlstm`
-- **基线**：`lr`
-- **避免**：`transformer`（易退化）
-
-### 多变量预测
-- **推荐**：`convlstm`（保留空间结构）
-- **快速基线**：`lr_multi`（每变量一个模型）
-- **空间特征**：`cnn`
-- **避免**：`lr`, `lstm`, `transformer`
-
-## 快速运行脚本
-
-使用 `scripts/` 目录中的脚本（每个脚本包含训练+预测+评估）：
+### 1. 创建虚拟环境
 
 ```bash
-# Linear Regression Multi
-./scripts/run_lr_multi.sh
-
-# LSTM
-./scripts/run_lstm.sh
-
-# CNN
-./scripts/run_cnn.sh
-
-# ConvLSTM（推荐）
-./scripts/run_convlstm.sh
-
-# Diffusion 基础
-./scripts/run_diffusion.sh
-
-# Diffusion + Ensemble（概率预测）
-./scripts/run_diffusion_ensemble.sh
+python3 -m venv venv
+source venv/bin/activate  # Linux/Mac
+# 或
+venv\Scripts\activate  # Windows
 ```
 
-**修改参数**：编辑对应脚本顶部的参数配置部分
+### 2. 安装依赖
+
+```bash
+# 基础依赖（传统模型：CNN, LSTM, ConvLSTM等）
+pip install -r requirements.txt
+
+# WeatherDiff额外依赖（如果使用WeatherDiff模块）
+pip install -r requirements_weatherdiff.txt
+```
+
+### 3. 验证安装
+
+```bash
+python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+python -c "import xarray; print('xarray OK')"
+python -c "from diffusers import AutoencoderKL; print('diffusers OK')"  # 如果安装了WeatherDiff依赖
+```
+
+## 数据准备
+
+### 数据说明
+
+- **路径**: `gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr`
+- **时间范围**: 1959-01-01 到 2021-12-31
+- **注意**: 路径名虽为"1959-2022"，实际数据只到2021年底
+
+### 常用时间切片
+
+```bash
+# 快速测试（2个月）
+--time-slice 2020-01-01:2020-02-28
+
+# 标准训练（1年）
+--time-slice 2020-01-01:2020-12-31
+
+# 完整训练（3年）
+--time-slice 2018-01-01:2020-12-31
+```
+
+## 模型训练
+
+### 传统深度学习模型
+
+#### ConvLSTM（推荐）⭐
+
+```bash
+# 使用脚本（推荐）
+./scripts/run_convlstm.sh
+
+# 或手动运行
+python train.py \
+    --model convlstm \
+    --variables 2m_temperature \
+    --time-slice 2020-01-01:2020-12-31 \
+    --epochs 50 \
+    --batch-size 16
+```
+
+**主要参数**:
+- `--model`: 模型类型 (lr, lstm, cnn, convlstm)
+- `--variables`: 预测变量（逗号分隔）
+- `--time-slice`: 训练时间范围
+- `--epochs`: 训练轮数
+- `--batch-size`: 批次大小
+
+#### Weather Transformer
+
+```bash
+./scripts/run_weather_transformer.sh
+
+# 或手动运行
+python train_weather_transformer.py \
+    --variables 2m_temperature \
+    --time-slice 2020-01-01:2020-12-31 \
+    --d-model 128 \
+    --n-layers 2 \
+    --epochs 50
+```
+
+**主要参数**:
+- `--d-model`: 模型维度
+- `--n-layers`: Transformer层数
+- `--n-heads`: 注意力头数
+- `--patch-size`: Patch大小
+
+### WeatherDiff 模块
+
+WeatherDiff是基于Stable Diffusion架构的天气预测模块，包含三个主要模型：
+
+#### 1. Pixel U-Net
+
+直接在像素空间进行图像到图像预测。
+
+```bash
+./scripts/run_pixel_unet.sh
+
+# 或手动运行
+python train_pixel_unet.py \
+    --data-path <data.zarr> \
+    --variable 2m_temperature \
+    --time-slice 2020-01-01:2020-12-31 \
+    --input-length 12 \
+    --output-length 4 \
+    --batch-size 16 \
+    --epochs 50
+```
+
+#### 2. Latent U-Net（推荐）⭐
+
+在VAE潜空间中预测，显存需求低，训练更稳定。
+
+```bash
+# 完整流程（含预处理，推荐）
+./scripts/run_latent_unet_full.sh
+
+# 或分步运行
+# Step 1: 预处理数据（大数据集必需）
+python preprocess_data_for_latent_unet.py \
+    --data-path <data.zarr> \
+    --variable 2m_temperature \
+    --time-slice 2015-01-01:2019-12-31 \
+    --target-size 512,512 \
+    --output-dir data/preprocessed/my_data
+
+# Step 2: 训练模型
+python train_latent_unet.py \
+    --preprocessed-data-dir data/preprocessed/my_data \
+    --variable 2m_temperature \
+    --input-length 12 \
+    --output-length 4 \
+    --batch-size 16 \
+    --epochs 50 \
+    --vae-batch-size 4
+```
+
+**关键参数**:
+- `--preprocessed-data-dir`: 预处理数据目录（推荐，避免内存溢出）
+- `--target-size`: 图像尺寸，必须是8的倍数（如512,512）
+- `--vae-batch-size`: VAE编码批次大小（控制显存）
+
+#### 3. Diffusion Model
+
+扩散模型，支持概率预测和不确定性量化。
+
+```bash
+./scripts/run_diffusion.sh
+
+# 或手动运行
+python train_diffusion.py \
+    --preprocessed-data-dir data/preprocessed/my_data \
+    --variable 2m_temperature \
+    --input-length 12 \
+    --output-length 4 \
+    --batch-size 8 \
+    --vae-batch-size 4 \
+    --epochs 20 \
+    --num-train-timesteps 1000
+```
+
+**关键参数**:
+- `--num-train-timesteps`: 扩散步数（默认1000）
+- `--beta-schedule`: Beta调度（linear/scaled_linear）
+- `--vae-batch-size`: VAE批次大小（避免显存溢出）
+
+## 模型预测
+
+### 传统模型预测
+
+```bash
+# 预测指定模型
+python predict.py \
+    --model-dir outputs/<model_name> \
+    --data-path <data.zarr> \
+    --time-slice 2021-01-01:2021-12-31
+```
+
+### WeatherDiff模块预测
+
+```bash
+# U-Net预测（像素或潜空间）
+python predict_unet.py \
+    --mode latent \
+    --model-dir outputs/latent_unet \
+    --vae-batch-size 4
+
+# Diffusion预测
+python predict_diffusion.py \
+    --model-dir outputs/diffusion \
+    --num-samples 1 \
+    --sampling-method ddim \
+    --num-inference-steps 50 \
+    --vae-batch-size 4
+```
+
+**Diffusion参数**:
+- `--num-samples`: 生成样本数（>1表示集成预测）
+- `--sampling-method`: 采样方法（ddpm/ddim，ddim更快）
+- `--num-inference-steps`: 推理步数（越多质量越好但越慢）
 
 ## 输出文件
 
-训练后会在 `outputs/**` 生成：
+训练后的输出目录结构：
 
-
-## Diffusion 模型（概率预测）
-
-### 基础训练
-
-```bash
-# 标准训练（确定性评估）
-python train_diffusion.py \
-    --variables 2m_temperature \
-    --time-slice 2019-01-01:2020-12-31 \
-    --epochs 200 \
-    --batch-size 16 \
-    --lr 5e-5
-
-# Ensemble 评估（概率预测，推荐）⭐
-python train_diffusion.py \
-    --variables 2m_temperature \
-    --time-slice 2019-01-01:2020-12-31 \
-    --epochs 200 \
-    --batch-size 16 \
-    --lr 5e-5 \
-    --enable-ensemble-eval \
-    --num-ensemble-members 20 \
-    --num-inference-steps 100
+```
+outputs/<model_name>/
+├── best_model.pt              # 最佳模型
+├── config.json                # 配置
+├── prediction_metrics.json    # 指标
+├── training_history.json      # 训练历史
+├── normalizer_stats.pkl       # 归一化参数（WeatherDiff）
+├── predictions_data/          # 预测数据
+│   ├── y_test.npy            # 真值
+│   ├── y_test_pred.npy       # 预测值
+│   └── ...
+└── *.png                      # 可视化图片
 ```
 
-### train_diffusion.py 参数
+## 常见问题
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--variables` | `2m_temperature` | 预测变量（逗号分割） |
-| `--time-slice` | `2020-01-01:2020-12-31` | 训练时间范围 |
-| `--epochs` | 150 | 训练轮数（Diffusion 需要更多） |
-| `--batch-size` | 16 | 批次大小 |
-| `--lr` | `5e-5` | 学习率（比其他模型低） |
-| `--base-channels` | 64 | UNet 基础通道数 |
-| `--num-diffusion-steps` | 1000 | Diffusion 步数 |
-| `--beta-schedule` | `cosine` | 噪声调度（linear/cosine） |
-| **Ensemble 相关** | | |
-| `--enable-ensemble-eval` | False | 启用 ensemble 评估 |
-| `--num-ensemble-members` | 10 | Ensemble 成员数量 |
-| `--num-inference-steps` | 50 | 推理步数（影响质量和速度） |
+### 1. 内存不足
 
-### 输出文件
+**问题**: 训练时内存溢出
 
-**标准输出**：
-- `best_model.pth` - 模型权重
-- `config.json` - 训练配置
-- `metrics.json` - 评估指标（RMSE, MAE）
-- `spatial_predictions_*.png` - 空间预测图
-- `point_predictions.png` - 时间序列图
-- `training_history.png` - 训练曲线
-
-**Ensemble 评估额外输出**（`--enable-ensemble-eval`）：
-- `ensemble_predictions.npy` - Ensemble 预测数据
-- `ensemble_spread.png` - Ensemble 成员分布
-- `ensemble_uncertainty_map.png` - 不确定性地图
-- `crps_vs_leadtime.png` - CRPS vs RMSE 对比
-- `metrics.json` 包含 `test_probabilistic` 部分（CRPS, Spread-Skill Ratio）
-
-### 评估指标
-
-**确定性指标**（标准输出）：
-- RMSE - 均方根误差
-- MAE - 平均绝对误差
-
-**概率指标**（Ensemble 评估）：
-- **CRPS** - Continuous Ranked Probability Score（越小越好）
-- **Spread-Skill Ratio** - 理想值 ≈ 1.0
-  - < 1.0: Under-dispersive（过度自信）
-  - > 1.0: Over-dispersive（不够自信）
-- **Ensemble Mean RMSE** - 与确定性模型对比
-
-### 重新评估已训练模型
-
-```bash
-# 使用已训练模型生成 ensemble 预测
-python evaluate_diffusion_ensemble.py \
-    --model-path outputs/diffusion_xxx/best_model.pth \
-    --num-ensemble-members 20 \
-    --num-inference-steps 100
-```
-
-### Diffusion 常见问题
-
-**Q: 为什么 RMSE 比其他模型高？**  
-A: Diffusion 是概率模型，单次推理不稳定。应该使用 Ensemble 评估（`--enable-ensemble-eval`），Ensemble Mean RMSE 会更好。
-
-**Q: 训练很慢怎么办？**  
-A: Diffusion 训练确实较慢。优化方法：
-- 减少 `--epochs`（最少 100）
-- 减小 `--base-channels`（64 → 32）
+**解决方案**:
 - 减小 `--batch-size`
-- 减小时间范围
+- 使用预处理数据（`preprocess_data_for_latent_unet.py`）
+- 使用Latent U-Net而非Pixel U-Net
+- 缩短时间范围
 
-**Q: 何时启用 Ensemble 评估？**  
-A: 
-- 最终评估时：启用（完整的概率评估）
-- 快速迭代时：不启用（节省时间）
+### 2. GPU显存不足
 
-**Q: Ensemble 成员数量如何选择？**  
-A: 
-- 快速测试：5-10 个
-- 标准评估：20 个
-- 完整评估：50+ 个（GenCast 级别）
+**问题**: CUDA out of memory
+
+**解决方案**:
+- 减小 `--batch-size`
+- 减小 `--vae-batch-size`（WeatherDiff模块）
+- 使用更小的图像尺寸
+- 使用梯度累积
+
+### 3. 训练速度慢
+
+**问题**: 训练非常慢
+
+**解决方案**:
+- 使用预处理数据（WeatherDiff模块）
+- 增加 `--num-workers`（数据加载线程）
+- 使用DDIM采样（Diffusion推理时）
+- 减少 `--num-inference-steps`
+
+### 4. VAE重建误差大
+
+**问题**: Latent U-Net效果不好
+
+**解决方案**:
+- 运行 `test_vae_reconstruction.py` 检查VAE重建质量
+- 确保数据归一化到[-1, 1]（WeatherDiff使用minmax归一化）
+- 使用3通道数据
+- 图像尺寸必须是8的倍数
+
+### 5. 预测结果不准
+
+**问题**: 模型预测精度低
+
+**解决方案**:
+- 增加训练数据量（至少1年）
+- 调整模型大小（`--base-channels`, `--depth`）
+- 尝试不同的学习率
+- 检查数据归一化方法
+- 尝试更复杂的模型（LSTM → ConvLSTM → Latent U-Net）
+
+## 超参数调优
+
+### ConvLSTM
+
+```bash
+--hidden-dim 64        # 隐藏层维度（默认64）
+--num-layers 2         # ConvLSTM层数（默认2）
+--kernel-size 3        # 卷积核大小（默认3）
+--lr 1e-4             # 学习率（默认1e-4）
+```
+
+### Latent U-Net
+
+```bash
+--base-channels 128    # 基础通道数（默认128）
+--depth 3             # U-Net深度（默认3）
+--lr 1e-4             # 学习率（默认1e-4）
+--weight-decay 1e-5   # 权重衰减（默认1e-5）
+--vae-batch-size 4    # VAE批次大小（默认4）
+```
+
+### Diffusion
+
+```bash
+--base-channels 128    # 基础通道数（默认128）
+--depth 3             # U-Net深度（默认3）
+--lr 1e-4             # 学习率（默认1e-4）
+--num-train-timesteps 1000  # 扩散步数（默认1000）
+--beta-schedule linear      # Beta调度（linear/scaled_linear）
+--vae-batch-size 4          # VAE批次大小（默认4）
+```
+
+## 脚本说明
+
+所有脚本位于 `scripts/` 目录，可以直接运行或编辑参数：
+
+| 脚本 | 说明 | 模块 |
+|------|------|------|
+| `run_convlstm.sh` | ConvLSTM训练+预测 | 传统模型 |
+| `run_weather_transformer.sh` | Transformer训练+预测 | 传统模型 |
+| `run_pixel_unet.sh` | Pixel U-Net训练+预测 | WeatherDiff |
+| `run_latent_unet_full.sh` | 完整流程（自动预处理）⭐ | WeatherDiff |
+| `run_diffusion.sh` | Diffusion训练+预测 ⭐ | WeatherDiff |
+
+**编辑脚本参数**: 直接打开脚本文件，修改顶部的参数配置即可。
+
+## 模型选择建议
+
+### 单变量预测
+- **快速测试**: Linear Regression
+- **标准预测**: ConvLSTM
+- **高质量**: Latent U-Net
+
+### 多变量预测
+- **快速测试**: Multi-Output LR
+- **标准预测**: ConvLSTM
+- **高质量**: Latent U-Net
+
+### 不确定性量化
+- **唯一选择**: Diffusion Model（集成预测）
+
+### 计算资源有限
+- **CPU**: Linear Regression, LSTM
+- **单GPU (8GB)**: CNN, ConvLSTM
+- **单GPU (12GB+)**: Latent U-Net, Diffusion
+- **多GPU**: 任意模型
+
+## 进阶用法
+
+### WeatherDiff数据预处理（大数据集推荐）
+
+```bash
+# 预处理数据（一次性）
+python preprocess_data_for_latent_unet.py \
+    --data-path <data.zarr> \
+    --variable 2m_temperature \
+    --time-slice 2015-01-01:2019-12-31 \
+    --target-size 512,512 \
+    --output-dir data/preprocessed/temp_5y \
+    --chunk-size 100
+
+# 在多个模型间共享预处理数据
+# Latent U-Net
+python train_latent_unet.py --preprocessed-data-dir data/preprocessed/temp_5y
+
+# Diffusion（共享同一预处理数据）
+python train_diffusion.py --preprocessed-data-dir data/preprocessed/temp_5y
+```
+
+### 模型对比
+
+```bash
+# 训练多个模型
+python train.py --model lstm --exp-name lstm_baseline
+python train.py --model convlstm --exp-name convlstm_v1
+python train_latent_unet.py --output-dir outputs/latent_unet
+
+# 对比结果
+python compare_models.py \
+    --model-dirs outputs/lstm_baseline outputs/convlstm_v1 outputs/latent_unet
+```
+
+### VAE重建测试（WeatherDiff）
+
+在训练WeatherDiff模块前，建议先测试VAE重建质量：
+
+```bash
+python test_vae_reconstruction.py \
+    --data-path <data.zarr> \
+    --variable 2m_temperature \
+    --time-slice 2020-01-01:2020-12-31 \
+    --n-test-samples 100 \
+    --output-dir outputs/vae_reconstruction
+```
+
+**验收标准**:
+- RMSE < 5K 且相关系数 > 0.9：VAE适用 ✓
+- RMSE > 10K：VAE可能不适合该数据
+
+---
+
+更多模型细节和原理请参考 [README.md](README.md)

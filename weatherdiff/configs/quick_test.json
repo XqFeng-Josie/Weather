@@ -1,0 +1,28 @@
+{
+  "name": "quick_test",
+  "description": "快速测试配置（2个月数据）",
+  
+  "data": {
+    "variable": "2m_temperature",
+    "time_slice": "2020-01-01:2020-02-28",
+    "normalization": "minmax",
+    "n_channels": 3,
+    "target_size": [256, 256]
+  },
+  
+  "model": {
+    "input_length": 4,
+    "output_length": 1,
+    "base_channels": 64,
+    "depth": 3
+  },
+  
+  "training": {
+    "batch_size": 8,
+    "epochs": 10,
+    "lr": 1e-4,
+    "weight_decay": 0.01,
+    "early_stopping": 5
+  }
+}
+

@@ -8,6 +8,7 @@ from .cnn import SimpleCNN
 from .lstm import LSTMModel
 from .convlstm import ConvLSTM, ConvLSTMModel
 from .transformer import TransformerModel
+from .weather_transformer import WeatherTransformer
 
 __all__ = [
     "LinearRegressionModel",
@@ -17,6 +18,7 @@ __all__ = [
     "ConvLSTM",
     "ConvLSTMModel",
     "TransformerModel",
+    "WeatherTransformer",
 ]
 
 
@@ -35,6 +37,7 @@ def get_model(model_name: str, **kwargs):
         "lstm": LSTMModel,
         "convlstm": ConvLSTMModel,
         "transformer": TransformerModel,
+        "weather_transformer": WeatherTransformer,
     }
 
     if model_name.lower() not in models:

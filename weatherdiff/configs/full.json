@@ -1,0 +1,28 @@
+{
+  "name": "full",
+  "description": "完整训练配置（3年数据）",
+  
+  "data": {
+    "variable": "2m_temperature",
+    "time_slice": "2018-01-01:2020-12-31",
+    "normalization": "minmax",
+    "n_channels": 3,
+    "target_size": [512, 512]
+  },
+  
+  "model": {
+    "input_length": 4,
+    "output_length": 1,
+    "base_channels": 128,
+    "depth": 4
+  },
+  
+  "training": {
+    "batch_size": 32,
+    "epochs": 100,
+    "lr": 1e-4,
+    "weight_decay": 0.01,
+    "early_stopping": 15
+  }
+}
+

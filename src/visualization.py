@@ -34,20 +34,35 @@ def visualize_predictions_improved(
         print(f"\n生成可视化图: {var_name}")
         
         # 提取该变量的数据
+        # 为了确保不同模型和不同分辨率数据的可比性，使用起始点 (0, 0)
+        # 这样无论网格分辨率如何，都提取相同的参考点
         if data_format == "flat":
+            # flat格式: (samples, lead_times, features)
+            # features是展平的空间网格，形状为 H*W
+            # 使用起始点 (0, 0)，对应展平索引 0
             n_features = y_test.shape[2]
             grid_points_per_var = n_features // n_variables
-            feature_idx = var_idx * grid_points_per_var
+            
+            # 起始点在展平数组中的索引
+            reference_h, reference_w = 0, 0
+            reference_idx_flat = reference_h * 1 + reference_w  # = 0
+            
+            feature_idx = var_idx * grid_points_per_var + reference_idx_flat
+            print(f"  flat格式: 使用起始点 ({reference_h}, {reference_w}), 展平索引={reference_idx_flat}")
+            
             y_true_var = y_test[:, :, feature_idx]  # (samples, lead_times)
             y_pred_var = y_test_pred[:, :, feature_idx]
         else:  # spatial
             # spatial format: (samples, lead_times, channels, H, W)
             # 其中 H=latitude维度, W=longitude维度
+            # 使用起始点 (0, 0)
             H, W = y_test.shape[3], y_test.shape[4]
-            center_h, center_w = H // 2, W // 2
+            reference_h, reference_w = 0, 0
+            print(f"  spatial格式: 使用起始点 ({reference_h}, {reference_w}), 网格大小=({H}, {W})")
+            
             channel_idx = var_idx if y_test.shape[2] == n_variables else var_idx
-            y_true_var = y_test[:, :, channel_idx, center_h, center_w]  # (samples, lead_times)
-            y_pred_var = y_test_pred[:, :, channel_idx, center_h, center_w]
+            y_true_var = y_test[:, :, channel_idx, reference_h, reference_w]  # (samples, lead_times)
+            y_pred_var = y_test_pred[:, :, channel_idx, reference_h, reference_w]
         
         safe_var_name = var_name.replace("/", "_").replace(" ", "_")
         
@@ -75,7 +90,22 @@ def visualize_predictions_improved(
         ax.plot(time_indices, time_series_true, 'b-', label='True', alpha=0.7, linewidth=1.5)
         ax.plot(time_indices, time_series_pred, 'r-', label='Pred', alpha=0.7, linewidth=1.5)
         ax.set_xlabel('Time Step Index', fontsize=12)
-        ax.set_ylabel('Normalized Value', fontsize=12)
+        
+        # 设置Y轴标签：如果没有norm_params，说明传入的是物理值
+        if norm_params is None:
+            # 根据变量名设置ylabel（物理值）
+            if 'temperature' in var_name.lower():
+                ax.set_ylabel('Temperature (K)', fontsize=12)
+            elif 'wind' in var_name.lower():
+                ax.set_ylabel('Wind Speed (m/s)', fontsize=12)
+            elif 'pressure' in var_name.lower():
+                ax.set_ylabel('Pressure (Pa)', fontsize=12)
+            else:
+                ax.set_ylabel('Physical Value', fontsize=12)
+        else:
+            # 归一化值
+            ax.set_ylabel('Normalized Value', fontsize=12)
+        
         ax.set_title(f'{var_name} - Overall Time Series Prediction', fontsize=14, fontweight='bold')
         ax.legend(fontsize=12)
         ax.grid(True, alpha=0.3)
@@ -120,7 +150,20 @@ def visualize_predictions_improved(
             ax.plot(x_indices, y_pred_lt, 'r-s', label='Pred', alpha=0.7, markersize=4)
             ax.set_title(f'Lead Time {i+1} ({(i+1)*6}h ahead)', fontsize=12)
             ax.set_xlabel('Independent Sample Index', fontsize=10)
-            ax.set_ylabel('Normalized Value', fontsize=10)
+            
+            # 设置Y轴标签
+            if norm_params is None:
+                # 物理值
+                if 'temperature' in var_name.lower():
+                    ax.set_ylabel('Temperature (K)', fontsize=10)
+                elif 'wind' in var_name.lower():
+                    ax.set_ylabel('Wind Speed (m/s)', fontsize=10)
+                else:
+                    ax.set_ylabel('Physical Value', fontsize=10)
+            else:
+                # 归一化值
+                ax.set_ylabel('Normalized Value', fontsize=10)
+            
             ax.set_xlim(left=0)
             ax.legend(fontsize=10)
             ax.grid(True, alpha=0.3)
