@@ -307,15 +307,18 @@ def main():
     except Exception as e:
         print(f"⚠ 无法生成可视化: {e}")
 
-    # ===================== 分别保存原图和重建图到子文件夹 =====================
+    # ===================== 分别保存原图和重建图到子文件夹（世界地图纯图） =====================
     if args.save_separate:
         try:
+            import cartopy.crs as ccrs
+            import cartopy.feature as cfeature
+
             original_dir = output_dir / "original"
             reconstructed_dir = output_dir / "reconstructed"
             original_dir.mkdir(parents=True, exist_ok=True)
             reconstructed_dir.mkdir(parents=True, exist_ok=True)
 
-            print(f"\n分别保存原图和重建图...")
+            print(f"\n分别保存原图和重建图（世界地图纯图）...")
             print(f"  原图目录: {original_dir}")
             print(f"  重建图目录: {reconstructed_dir}")
 
@@ -324,38 +327,86 @@ def main():
             vmax_all = float(np.nanmax(vis_samples_orig[:, 0]))
 
             for i in range(n_vis_samples):
-                gt = vis_samples_orig[i, 0]  # (H,W)
-                rc = vis_recons_orig[i, 0]
+                data_true = vis_samples_orig[i, 0]  # (H, W)
+                data_recon = vis_recons_orig[i, 0]  # (H, W)
+                
+                # 如果是 (64, 32)，说明维度反了，转置回来
+                if data_true.shape == (64, 32):
+                    data_true = data_true.T
+                    data_recon = data_recon.T
+                
+                # 经度方向重排
+                data_true_plot = to_plot_array(data_true)
+                data_recon_plot = to_plot_array(data_recon)
 
-                # 保存原图
-                fig, ax = plt.subplots(figsize=(10, 6))
-                im = imshow_geo(ax, gt, f"Sample {i} - Original", cmap="RdYlBu_r")
-                im.set_clim(vmin_all, vmax_all)  # 使用统一颜色范围
-                plt.colorbar(
-                    im, ax=ax, label="Temperature (K)", fraction=0.046, pad=0.04
+                # 构造网格（与重排后的数据一一对应）
+                lon_grid, lat_grid = np.meshgrid(LON_PM_SORTED, LAT_SN)  # (H,W)
+
+                # 保存原图（纯图，无坐标轴、标签等）
+                fig = plt.figure(figsize=(16, 8))
+                ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+                ax.set_global()
+                ax.contourf(
+                    lon_grid,
+                    lat_grid,
+                    data_true_plot,
+                    levels=100,
+                    cmap="RdYlBu_r",
+                    vmin=vmin_all,
+                    vmax=vmax_all,
+                    transform=ccrs.PlateCarree(),
                 )
-                plt.tight_layout()
+                ax.coastlines(linewidth=0.5)
+                # 去掉所有坐标轴、标签、标题
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+                ax.spines["bottom"].set_visible(False)
+                ax.spines["left"].set_visible(False)
+                plt.axis("off")
                 plt.savefig(
-                    original_dir / f"sample_{i:03d}.png", dpi=150, bbox_inches="tight"
+                    original_dir / f"sample_{i:03d}.png",
+                    dpi=300,
+                    bbox_inches="tight",
+                    pad_inches=0,
                 )
                 plt.close()
 
-                # 保存重建图
-                fig, ax = plt.subplots(figsize=(10, 6))
-                im = imshow_geo(ax, rc, f"Sample {i} - Reconstruction", cmap="RdYlBu_r")
-                im.set_clim(vmin_all, vmax_all)  # 使用统一颜色范围
-                plt.colorbar(
-                    im, ax=ax, label="Temperature (K)", fraction=0.046, pad=0.04
+                # 保存重建图（纯图，无坐标轴、标签等）
+                fig = plt.figure(figsize=(16, 8))
+                ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+                ax.set_global()
+                ax.contourf(
+                    lon_grid,
+                    lat_grid,
+                    data_recon_plot,
+                    levels=100,
+                    cmap="RdYlBu_r",
+                    vmin=vmin_all,
+                    vmax=vmax_all,
+                    transform=ccrs.PlateCarree(),
                 )
-                plt.tight_layout()
+                ax.coastlines(linewidth=0.5)
+                # 去掉所有坐标轴、标签、标题
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+                ax.spines["bottom"].set_visible(False)
+                ax.spines["left"].set_visible(False)
+                plt.axis("off")
                 plt.savefig(
                     reconstructed_dir / f"sample_{i:03d}.png",
-                    dpi=150,
+                    dpi=300,
                     bbox_inches="tight",
+                    pad_inches=0,
                 )
                 plt.close()
 
             print(f"✓ 已保存 {n_vis_samples} 个样本的原图和重建图到对应子文件夹")
+        except ImportError:
+            print("⚠ 需要安装cartopy才能生成世界地图: pip install cartopy")
         except Exception as e:
             print(f"⚠ 无法分别保存原图和重建图: {e}")
 
