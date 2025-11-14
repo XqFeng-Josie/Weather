@@ -28,6 +28,7 @@ from scipy.ndimage import zoom
 from tqdm import tqdm
 import json
 import pickle
+import os
 
 
 def prepare_image(data_slice, n_channels=3, target_size=(512, 512)):

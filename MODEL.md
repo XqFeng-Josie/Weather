@@ -8,6 +8,7 @@
 2. [传统深度学习模型](#传统深度学习模型)
    - [Linear Regression](#linear-regression)
    - [LSTM](#lstm)
+   - [Transformer (序列建模)](#transformer-序列建模)
    - [CNN](#cnn)
    - [ConvLSTM](#convlstm)
    - [Weather Transformer](#weather-transformer)
@@ -284,6 +285,14 @@ hidden_next = o * tanh(cell_next)  # 更新隐藏状态
 - ✅ 需要时空建模的任务
 - ✅ 确定性预测场景
 
+#### 扩展：ConvLSTM Seq2Seq
+
+`src/models/convlstm.py` 中还实现了 `ConvLSTMSeq2Seq`：
+
+- 使用 ConvLSTM 编码器提取历史潜状态，解码器以最后一帧初始化后自回归地产生未来帧。
+- 输出通过 1×1 卷积恢复到原始变量数，可选择用预测作为下一步输入，实现教师强制或自由运行。
+- 适合需要更长输出序列或希望在解码阶段注入外部条件（例如外推边界）的场景。
+
 ---
 
 ### Weather Transformer
@@ -348,7 +357,7 @@ Patch Embedding (每个时间步):
 
 4. **轻量化设计**:
    - 参数量约1.6M（与ConvLSTM相当）
-   - 使用Pre-LN和更好的初始化
+   - 使用残差后LayerNorm (Post-LN) 与更好的初始化
 
 #### 与任务的关系
 
@@ -720,8 +729,8 @@ x_{t-1} = sqrt(alpha_bar_{t-1}) * predicted_x_0 + sqrt(1-alpha_bar_{t-1}) * pred
 | **CNN** | 空间 | ⚡⚡ | ⚡⚡⚡ | ✗ | 中 | 中 | 空间模式 |
 | **ConvLSTM** | 时空 | ⚡ | ⚡⚡ | ✗ | 中 | 中 | **通用预测** ⭐ |
 | **Weather Transformer** | 时空 | ⚡ | ⚡ | ✗ | 中 | 少 | 长距离依赖 |
-| **Pixel U-Net** | 时空 | ⚡⚡ | ⚡⚡ | ✗ | 高 | 中 | 小图像 |
-| **Latent U-Net** | 时空 | ⚡⚡ | ⚡⚡ | ✗ | 低 | 中 | **大图像**** ⭐ |
+| **Pixel U-Net** | 空间(通道堆叠) | ⚡⚡ | ⚡⚡ | ✗ | 高 | 中 | 小图像 |
+| **Latent U-Net** | 空间(潜空间堆叠) | ⚡⚡ | ⚡⚡ | ✗ | 低 | 中 | **大图像**** ⭐ |
 | **Diffusion** | 时空 | 🐢 | 🐢 | ✓ | 高 | 中 | **概率预测** ⭐ |
 
 ### 选择指南
@@ -784,4 +793,3 @@ x_{t-1} = sqrt(alpha_bar_{t-1}) * predicted_x_0 + sqrt(1-alpha_bar_{t-1}) * pred
 - 模型复杂度 vs 数据量
 
 建议从ConvLSTM开始，然后根据需求选择Latent U-Net（大尺寸）或Diffusion（不确定性）。
-

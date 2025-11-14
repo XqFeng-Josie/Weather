@@ -21,7 +21,7 @@ set -e
 
 # ============ 参数配置 ============
 VARIABLE="2m_temperature"
-TIME_SLICE="2015-01-01:2019-12-31"          # 训练数据
+TIME_SLICE="2000-01-01:2019-12-31"          # 训练数据
 PREDICTION_TIME_SLICE="2020-01-01:2020-12-31"  # 预测数据
 
 # 模型参数
@@ -37,7 +37,7 @@ BETA_SCHEDULE="linear"      # beta调度方式
 NUM_INFERENCE_STEPS=100     # 推理步数（越多越好但越慢）
 
 # 训练参数
-EPOCHS=20
+EPOCHS=1
 BATCH_SIZE=8         # 扩散模型batch size通常较小
 VAE_BATCH_SIZE=4     # VAE编码子批次（控制显存）
 LR=0.0001
@@ -58,7 +58,7 @@ PREPROCESSED_DIR="data/preprocessed/vae_pre_${TIME_SLICE//:/_}_${TARGET_SIZE//,/
 # PREPROCESSED_DIR="data/preprocessed/latent_unet_${TIME_SLICE//:/_}_${TARGET_SIZE//,/x}"
 
 # 输出目录
-OUTPUT_DIR="outputs/diffusion"
+OUTPUT_DIR="outputs/diffusion_${TIME_SLICE//:/_}"
 
 echo "========================================================================"
 echo "扩散模型训练和预测"
