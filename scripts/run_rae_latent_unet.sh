@@ -18,12 +18,12 @@ TIME_SLICE="2015-01-01:2019-12-31"  # 5年完整数据
 PREDICTION_TIME_SLICE="2020-01-01:2020-12-31"
 # PREDICTION_TIME_SLICE="2020-01-01:2020-01-31"
 
-# RAE参数
+# RAE参数（优先使用SigLIP2）
 VAE_TYPE="rae"
-RAE_ENCODER_CLS="Dinov2withNorm"
-RAE_ENCODER_CONFIG_PATH="facebook/dinov2-base"
-RAE_ENCODER_INPUT_SIZE=224
-RAE_DECODER_CONFIG_PATH="vit_mae-base"
+RAE_ENCODER_CLS="MAEwNorm" # Dinov2withNorm MAEwNorm default: SigLIP2wNorm
+RAE_ENCODER_CONFIG_PATH="facebook/vit-mae-base" # facebook/dinov2-base facebook/vit-mae-base google/siglip2-base-patch16-256
+RAE_ENCODER_INPUT_SIZE=256
+RAE_DECODER_CONFIG_PATH="facebook/vit-mae-base"
 RAE_DECODER_PATCH_SIZE=16
 RAE_PRETRAINED_DECODER_PATH=""  # 可选，预训练decoder路径
 RAE_NORMALIZATION_STAT_PATH=""  # 可选，归一化统计量路径
@@ -41,16 +41,16 @@ EPOCHS=50
 BATCH_SIZE=16        # 主batch size（lazy loading支持）
 VAE_BATCH_SIZE=4     # VAE编码子批次（控制显存，可根据GPU调整）
 LR=0.0001
-EARLY_STOPPING=10
+EARLY_STOPPING=5
 
 # 数据参数
 NORMALIZATION="minmax"
-TARGET_SIZE="512,512"  # 使用完整的512x512分辨率
+TARGET_SIZE="256,256"  # 使用完整的256x256分辨率
 DATA_PATH="gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr"
 
 # 输出目录
 PREPROCESSED_DIR="data/preprocessed/vae_pre_${TIME_SLICE//:/_}_${TARGET_SIZE//,/x}"
-OUTPUT_DIR="outputs/rae_latent_unet_${VARIABLE}"
+OUTPUT_DIR="outputs/rae_latent_unet_${VARIABLE}_${RAE_ENCODER_CLS}"
 
 echo "========================================================================"
 echo "完整RAE潜空间U-Net训练流程"
@@ -118,6 +118,7 @@ TRAIN_CMD="python train_latent_unet.py \
     --rae-encoder-input-size $RAE_ENCODER_INPUT_SIZE \
     --rae-decoder-config-path $RAE_DECODER_CONFIG_PATH \
     --rae-decoder-patch-size $RAE_DECODER_PATCH_SIZE \
+    --target-size $TARGET_SIZE \
     --input-length $INPUT_LENGTH \
     --output-length $OUTPUT_LENGTH \
     --base-channels $BASE_CHANNELS \
@@ -167,7 +168,7 @@ python predict_unet.py \
     --data-path $DATA_PATH \
     --time-slice $PREDICTION_TIME_SLICE \
     --batch-size 32 \
-    --vae-batch-size $VAE_BATCH_SIZE
+    --vae-batch-size $VAE_BATCH_SIZE 
 
 echo ""
 echo "✓ 预测完成!"

@@ -18,8 +18,13 @@ TIME_SLICE="2015-01-01:2019-12-31"  # 5年完整数据
 PREDICTION_TIME_SLICE="2020-01-01:2020-12-31"
 # PREDICTION_TIME_SLICE="2020-01-01:2020-01-31"
 
+# VAE参数
+VAE_TYPE="sd"  # VAE类型: sd (Stable Diffusion) 或 rae
+VAE_MODEL_ID="stable-diffusion-v1-5/stable-diffusion-v1-5"  # SD VAE模型ID
+VAE_TRAIN_MODE="pretrained"  # VAE训练模式: pretrained (加载预训练) 或 from_scratch (从头训练)
+VAE_PRETRAINED_PATH=""  # 可选，预训练VAE权重路径（如果使用from_scratch但想加载特定权重）
+
 # 模型参数
-VAE_MODEL_ID="stable-diffusion-v1-5/stable-diffusion-v1-5"
 INPUT_LENGTH=12
 OUTPUT_LENGTH=4
 BASE_CHANNELS=128
@@ -39,13 +44,16 @@ DATA_PATH="gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conse
 
 # 输出目录
 PREPROCESSED_DIR="data/preprocessed/vae_pre_${TIME_SLICE//:/_}_${TARGET_SIZE//,/x}"
-OUTPUT_DIR="outputs/latent_unet_${VARIABLE}"
+OUTPUT_DIR="outputs/vae_latent_unet_${VARIABLE}"
 
 echo "========================================================================"
-echo "完整潜空间U-Net训练流程"
+echo "完整VAE潜空间U-Net训练流程"
 echo "========================================================================"
 echo "数据: $TIME_SLICE (5年完整数据)"
 echo "分辨率: $TARGET_SIZE (高分辨率)"
+echo "VAE类型: $VAE_TYPE"
+echo "VAE模型: $VAE_MODEL_ID"
+echo "VAE训练模式: $VAE_TRAIN_MODE"
 echo "预处理目录: $PREPROCESSED_DIR"
 echo "模型目录: $OUTPUT_DIR"
 echo ""
@@ -93,9 +101,13 @@ echo "Step 2: 训练潜空间U-Net（Lazy Loading）"
 echo "========================================================================"
 echo ""
 
-python train_latent_unet.py \
+# 构建训练命令
+TRAIN_CMD="python train_latent_unet.py \
     --preprocessed-data-dir $PREPROCESSED_DIR \
+    --vae-type $VAE_TYPE \
     --vae-model-id $VAE_MODEL_ID \
+    --vae-train-mode $VAE_TRAIN_MODE \
+    --target-size $TARGET_SIZE \
     --input-length $INPUT_LENGTH \
     --output-length $OUTPUT_LENGTH \
     --base-channels $BASE_CHANNELS \
@@ -105,7 +117,15 @@ python train_latent_unet.py \
     --epochs $EPOCHS \
     --lr $LR \
     --early-stopping $EARLY_STOPPING \
-    --output-dir $OUTPUT_DIR
+    --output-dir $OUTPUT_DIR"
+
+# 添加可选参数
+if [ -n "$VAE_PRETRAINED_PATH" ]; then
+    TRAIN_CMD="$TRAIN_CMD --vae-pretrained-path $VAE_PRETRAINED_PATH"
+fi
+
+# 执行训练命令
+eval $TRAIN_CMD
 
 echo ""
 echo "✓ 训练完成!"
@@ -152,6 +172,14 @@ echo ""
 echo "  预测结果: $OUTPUT_DIR/"
 echo "    - prediction_metrics.json: 评估指标"
 echo "    - *.png: 可视化图片"
+echo ""
+echo "VAE配置:"
+echo "  VAE类型: $VAE_TYPE"
+echo "  VAE模型: $VAE_MODEL_ID"
+echo "  训练模式: $VAE_TRAIN_MODE"
+if [ -n "$VAE_PRETRAINED_PATH" ]; then
+    echo "  预训练路径: $VAE_PRETRAINED_PATH"
+fi
 echo ""
 echo "内存使用情况:"
 echo "  预处理阶段: 分块处理，内存占用可控"

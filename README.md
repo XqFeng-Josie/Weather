@@ -91,7 +91,12 @@ Y: (n_samples, output_length, features)
 **模块组成**：
 ```
 weatherdiff/
-├── vae/          # Stable Diffusion VAE功能
+├── vae/          # VAE功能（SD VAE + RAE）
+│   ├── vae_wrapper.py    # SD VAE包装器
+│   ├── rae_wrapper.py    # RAE包装器
+│   └── rae/              # RAE核心模块
+│       ├── encoders/     # Encoder（DINOv2, SigLIP2, MAE）
+│       └── decoders/     # Decoder（可微调）
 ├── unet/         # U-Net模型（像素和潜空间）
 ├── diffusion/    # 扩散模型
 └── utils/        # 工具函数
@@ -104,16 +109,23 @@ weatherdiff/
 - **特点**: 训练快速，结果确定
 
 #### Latent U-Net ⭐
-- **原理**: 在VAE潜空间中预测（SD-VAE)
+- **原理**: 在VAE潜空间中预测
+- **VAE选项**: 
+  - **SD VAE**: Stable Diffusion预训练VAE（默认）
+    - **训练模式**: 
+      - `pretrained`: 加载预训练权重（默认）
+      - `from_scratch`: 从头训练（随机初始化）
+    - **可训练性**: 支持冻结VAE（仅推理）或训练VAE（微调）
+  - **RAE**: Representation Autoencoder（可选，支持多种encoder）
 - **优势**: 
   - 显存需求低（512×512 → 64×64潜空间）
   - 训练更稳定
   - 生成结果更平滑
-- **使用**: Stable Diffusion预训练VAE
+  - 支持VAE微调（可选）
 - **推荐**: 在大尺寸数据上训练时使用
 
 #### Diffusion Model ⭐
-- **原理**: 扩散模型，概率预测 (SD-VAD+U-Net+diffusion)
+- **原理**: 扩散模型，概率预测 (SD-VAE+U-Net+diffusion)
 - **训练**: 学习如何“去噪”未来潜向量，从噪声恢复出真实未来。
 - **推理**: 从噪声逐步去噪生成预测
 - **特点**:
@@ -178,7 +190,10 @@ Weather/
 │       └── weather_transformer.py
 │
 ├── weatherdiff/               # WeatherDiff模块 ⭐
-│   ├── vae/                   # VAE功能（SD预训练）
+│   ├── vae/                   # VAE功能（SD VAE + RAE）
+│   │   ├── vae_wrapper.py     # SD VAE包装器
+│   │   ├── rae_wrapper.py     # RAE包装器
+│   │   └── rae/               # RAE核心模块
 │   ├── unet/                  # U-Net模型（像素/潜空间）
 │   ├── diffusion/             # 扩散模型
 │   └── utils/                 # 工具函数
@@ -269,6 +284,21 @@ outputs/<model_name>/
 - WeatherDiff模块中，Pixel U-Net表现最好，但整体误差高于传统模型
 - Diffusion模型误差较大，可能需要进一步调优或更多训练数据
 
+## 🔧 使用指南
+
+### 环境配置
+
+```bash
+# 创建虚拟环境
+python3 -m venv venv
+source venv/bin/activate
+
+# 安装基础依赖
+pip install -r requirements.txt
+
+# 安装WeatherDiff额外依赖
+pip install -r requirements_weatherdiff.txt
+```
 
 ## 📚 参考文献
 
@@ -289,4 +319,4 @@ outputs/<model_name>/
 
 ---
 
-更多详细使用说明请参考 [USAGE.md](USAGE.md)
+更多模型架构细节请参考 [MODEL.md](MODEL.md)

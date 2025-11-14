@@ -245,9 +245,31 @@ def predict_pixel_unet(args):
     print(f"数据范围: [{data.min():.2f}, {data.max():.2f}]")
     print(f"时间范围: {start} 至 {end}")
 
+    # 获取target_size（如果有）
+    target_size = None
+    if "target_size" in config and config["target_size"]:
+        if isinstance(config["target_size"], str):
+            target_size = tuple(map(int, config["target_size"].split(",")))
+        else:
+            target_size = tuple(config["target_size"])
+
     # 准备为图像格式
-    data = prepare_weather_data(data, n_channels=config["n_channels"], target_size=None)
+    data = prepare_weather_data(
+        data, n_channels=config["n_channels"], target_size=target_size
+    )
     print(f"处理后 shape: {data.shape}")
+    if target_size:
+        print(f"  图像尺寸: {target_size}")
+        # 验证数据尺寸是否与target_size一致
+        _, _, data_H, data_W = data.shape
+        if data_H != target_size[0] or data_W != target_size[1]:
+            raise ValueError(
+                f"数据尺寸不匹配：\n"
+                f"  数据加载后的尺寸: ({data_H}, {data_W})\n"
+                f"  训练时target_size: {target_size}\n"
+                f"  可能原因：prepare_weather_data未正确resize到target_size\n"
+                f"  解决方案：检查prepare_weather_data的target_size参数是否正确传递"
+            )
 
     # 归一化（使用训练时保存的参数）
     normalizer = Normalizer(method=config["normalization"])
@@ -390,26 +412,46 @@ def predict_latent_unet(args):
     # 检查VAE类型
     vae_type = normalizer_data.get("vae_type", "sd")  # 默认SD VAE
     if vae_type == "sd":
-        print(
-            f"使用Stable Diffusion VAE: {config.get('vae_model_id', normalizer_data.get('vae_model_id', 'stable-diffusion-v1-5'))}"
+        vae_model_id = config.get(
+            "vae_model_id",
+            normalizer_data.get("vae_model_id", "stable-diffusion-v1-5"),
         )
+        vae_train_mode = config.get(
+            "vae_train_mode",
+            normalizer_data.get("vae_train_mode", "pretrained"),
+        )
+        vae_pretrained_path = config.get(
+            "vae_pretrained_path",
+            normalizer_data.get("vae_pretrained_path", None),
+        )
+        freeze_vae = config.get(
+            "freeze_vae",
+            normalizer_data.get("freeze_vae", True),
+        )
+
+        print(f"使用Stable Diffusion VAE: {vae_model_id}")
+        print(f"  VAE训练模式: {vae_train_mode}")
+        if vae_pretrained_path:
+            print(f"  预训练权重路径: {vae_pretrained_path}")
+        print(f"  VAE冻结: {freeze_vae}")
+
         vae_wrapper = SDVAEWrapper(
-            model_id=config.get(
-                "vae_model_id",
-                normalizer_data.get("vae_model_id", "stable-diffusion-v1-5"),
-            ),
+            model_id=vae_model_id,
             device=args.device,
+            train_mode=vae_train_mode,
+            pretrained_path=vae_pretrained_path,
+            freeze_vae=freeze_vae,
         )
         latent_channels = 4
     elif vae_type == "rae":
         print(
-            f"使用RAE: encoder={normalizer_data.get('rae_encoder_cls', 'Dinov2withNorm')}"
+            f"使用RAE: encoder={normalizer_data.get('rae_encoder_cls', 'SigLIP2wNorm')}"
         )
         # 构建encoder_params
         encoder_params = {}
-        encoder_cls = normalizer_data.get("rae_encoder_cls", "Dinov2withNorm")
+        encoder_cls = normalizer_data.get("rae_encoder_cls", "SigLIP2wNorm")
         encoder_config_path = normalizer_data.get(
-            "rae_encoder_config_path", "facebook/dinov2-base"
+            "rae_encoder_config_path", "google/siglip2-base-patch16-256"
         )
 
         if encoder_cls == "Dinov2withNorm":
@@ -422,10 +464,10 @@ def predict_latent_unet(args):
         vae_wrapper = RAEWrapper(
             encoder_cls=encoder_cls,
             encoder_config_path=encoder_config_path,
-            encoder_input_size=normalizer_data.get("rae_encoder_input_size", 224),
+            encoder_input_size=normalizer_data.get("rae_encoder_input_size", 256),
             encoder_params=encoder_params,
             decoder_config_path=normalizer_data.get(
-                "rae_decoder_config_path", "vit_mae-base"
+                "rae_decoder_config_path", "facebook/vit-mae-base"
             ),
             decoder_patch_size=normalizer_data.get("rae_decoder_patch_size", 16),
             pretrained_decoder_path=normalizer_data.get(
@@ -499,6 +541,17 @@ def predict_latent_unet(args):
     data = prepare_weather_data(data, n_channels=3, target_size=target_size)
     print(f"处理后 shape: {data.shape}")
     print(f"  图像尺寸: {target_size}")
+
+    # 验证数据尺寸是否与target_size一致
+    _, _, data_H, data_W = data.shape
+    if data_H != target_size[0] or data_W != target_size[1]:
+        raise ValueError(
+            f"数据尺寸不匹配：\n"
+            f"  数据加载后的尺寸: ({data_H}, {data_W})\n"
+            f"  训练时target_size: {target_size}\n"
+            f"  可能原因：prepare_weather_data未正确resize到target_size\n"
+            f"  解决方案：检查prepare_weather_data的target_size参数是否正确传递"
+        )
 
     # 获取latent shape
     if vae_type == "rae":
@@ -623,7 +676,25 @@ def predict_latent_unet(args):
             outputs = decode_in_batches(
                 vae_wrapper, latent_outputs_flat.cpu(), vae_batch_size, args.device
             )
-            outputs = outputs.reshape(B, T_out, C, H, W)
+
+            # decode_in_batches返回的是 (B*T_out, C, H, W)
+            _, _, decoded_H, decoded_W = outputs.shape
+            outputs = outputs.reshape(B, T_out, C, decoded_H, decoded_W)
+
+            # 严格验证：解码后的尺寸必须等于target_size（训练时的尺寸）
+            # 如果尺寸不匹配，说明预测时的数据加载或VAE配置有问题，直接报错
+            if decoded_H != target_size[0] or decoded_W != target_size[1]:
+                raise ValueError(
+                    f"维度不匹配错误：\n"
+                    f"  VAE解码输出尺寸: ({decoded_H}, {decoded_W})\n"
+                    f"  训练时target_size: {target_size}\n"
+                    f"  预测时输入尺寸: ({H}, {W})\n"
+                    f"  可能原因：\n"
+                    f"    1. 预测时数据加载未使用正确的target_size\n"
+                    f"    2. VAE配置与训练时不一致（特别是RAE的decoder配置）\n"
+                    f"    3. 数据加载后未正确resize到target_size\n"
+                    f"  解决方案：确保预测时使用与训练时相同的target_size和VAE配置"
+                )
 
             all_predictions.append(outputs.cpu().numpy())
             all_targets.append(targets.numpy())

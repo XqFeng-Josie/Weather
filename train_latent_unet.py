@@ -68,8 +68,10 @@ class LatentUNetTrainer(UNetTrainer):
     def train_epoch(self, train_loader):
         """训练一个epoch（在潜空间）"""
         self.model.train()
-        # 如果使用RAE，设置训练模式
+        # 设置VAE训练模式
         if isinstance(self.vae, RAEWrapper):
+            self.vae.train_mode()
+        elif isinstance(self.vae, SDVAEWrapper) and not self.vae.freeze_vae:
             self.vae.train_mode()
 
         total_loss = 0
@@ -88,12 +90,21 @@ class LatentUNetTrainer(UNetTrainer):
             latent_channels, latent_h, latent_w = latent_shape
 
             # 编码到潜空间（分批处理避免显存溢出）
-            # 对于RAE，encoder固定，decoder可训练，但编码时仍使用no_grad
-            encode_grad = (
-                isinstance(self.vae, RAEWrapper)
-                and not self.vae.rae.encoder.requires_grad
-            )
-            with torch.set_grad_enabled(not encode_grad):
+            # 检查VAE是否被冻结（所有参数都不需要梯度）
+            encode_grad = False
+            if isinstance(self.vae, RAEWrapper):
+                # 检查encoder是否有任何参数需要梯度
+                encoder_requires_grad = any(
+                    p.requires_grad for p in self.vae.rae.encoder.parameters()
+                )
+                encode_grad = encoder_requires_grad  # encoder可训练时，使用梯度
+            elif isinstance(self.vae, SDVAEWrapper):
+                # 检查VAE是否有任何参数需要梯度
+                vae_requires_grad = any(
+                    p.requires_grad for p in self.vae.vae.parameters()
+                )
+                encode_grad = vae_requires_grad  # VAE可训练时，使用梯度
+            with torch.set_grad_enabled(encode_grad):
                 # 编码输入（使用分批编码）
                 inputs_flat = inputs.reshape(B * T_in, C, H, W)
                 latent_inputs = self._encode_in_batches(inputs_flat)
@@ -131,8 +142,10 @@ class LatentUNetTrainer(UNetTrainer):
     def validate(self, val_loader):
         """验证（在潜空间）"""
         self.model.eval()
-        # 如果使用RAE，设置评估模式
+        # 设置VAE评估模式
         if isinstance(self.vae, RAEWrapper):
+            self.vae.eval_mode()
+        elif isinstance(self.vae, SDVAEWrapper):
             self.vae.eval_mode()
 
         total_loss = 0
@@ -207,31 +220,50 @@ def main():
         default="stable-diffusion-v1-5/stable-diffusion-v1-5",
         help="VAE模型ID（SD VAE使用）",
     )
+    parser.add_argument(
+        "--vae-train-mode",
+        type=str,
+        default="pretrained",
+        choices=["pretrained", "from_scratch"],
+        help="VAE训练模式: pretrained (加载预训练) 或 from_scratch (从头训练)",
+    )
+    parser.add_argument(
+        "--vae-pretrained-path",
+        type=str,
+        default=None,
+        help="可选，预训练VAE权重路径（用于fine-tuning）",
+    )
+    parser.add_argument(
+        "--freeze-vae",
+        action="store_true",
+        default=False,
+        help="冻结VAE参数（默认False，允许训练）",
+    )
 
     # RAE参数
     parser.add_argument(
         "--rae-encoder-cls",
         type=str,
-        default="Dinov2withNorm",
+        default="SigLIP2wNorm",
         choices=["Dinov2withNorm", "SigLIP2wNorm", "MAEwNorm"],
         help="RAE encoder类型",
     )
     parser.add_argument(
         "--rae-encoder-config-path",
         type=str,
-        default="facebook/dinov2-base",
+        default="google/siglip2-base-patch16-256",
         help="RAE encoder配置路径（HuggingFace模型ID）",
     )
     parser.add_argument(
         "--rae-encoder-input-size",
         type=int,
-        default=224,
+        default=256,
         help="RAE encoder输入图像尺寸",
     )
     parser.add_argument(
         "--rae-decoder-config-path",
         type=str,
-        default="vit_mae-base",
+        default="facebook/vit-mae-base",
         help="RAE decoder配置路径（HuggingFace模型ID）",
     )
     parser.add_argument(
@@ -319,6 +351,18 @@ def main():
     target_size = (h, w)
     assert h % 8 == 0 and w % 8 == 0, "尺寸必须是8的倍数"
 
+    # 如果使用预处理数据，先读取metadata获取target_size
+    if args.preprocessed_data_dir:
+        import json
+
+        metadata_path = Path(args.preprocessed_data_dir) / "metadata.json"
+        if metadata_path.exists():
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
+            if "target_size" in metadata:
+                target_size = tuple(metadata["target_size"])
+                print(f"从预处理数据读取target_size: {target_size}")
+
     # 创建输出目录
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -334,7 +378,17 @@ def main():
 
     if args.vae_type == "sd":
         print(f"使用Stable Diffusion VAE: {args.vae_model_id}")
-        vae_wrapper = SDVAEWrapper(model_id=args.vae_model_id, device=args.device)
+        print(f"  训练模式: {args.vae_train_mode}")
+        if args.vae_pretrained_path:
+            print(f"  预训练权重路径: {args.vae_pretrained_path}")
+        print(f"  冻结VAE: {args.freeze_vae}")
+        vae_wrapper = SDVAEWrapper(
+            model_id=args.vae_model_id,
+            train_mode=args.vae_train_mode,
+            pretrained_path=args.vae_pretrained_path,
+            device=args.device,
+            freeze_vae=args.freeze_vae,
+        )
         latent_channels = 4  # SD VAE固定为4
     elif args.vae_type == "rae":
         print(
@@ -365,8 +419,29 @@ def main():
             freeze_encoder=args.freeze_encoder,
             freeze_decoder=args.freeze_decoder,
         )
-        # 获取latent_channels（需要先有target_size）
-        # 暂时使用默认值，后面会根据实际target_size更新
+
+        # 获取RAE decoder的输出尺寸（这是固定的，由encoder_input_size和decoder_patch_size决定）
+        decoder_output_size = vae_wrapper.get_decoder_output_size()
+        print(f"  RAE decoder输出尺寸: {decoder_output_size}")
+
+        # 验证target_size必须等于decoder输出尺寸
+        if (
+            target_size[0] != decoder_output_size[0]
+            or target_size[1] != decoder_output_size[1]
+        ):
+            raise ValueError(
+                f"维度不匹配错误：\n"
+                f"  训练时target_size: {target_size}\n"
+                f"  RAE decoder输出尺寸: {decoder_output_size}\n"
+                f"  原因：RAE decoder的输出尺寸是固定的，由encoder_input_size和decoder_patch_size决定\n"
+                f"  当前配置：encoder_input_size={args.rae_encoder_input_size}, "
+                f"decoder_patch_size={args.rae_decoder_patch_size}\n"
+                f"  解决方案：\n"
+                f"    1. 将--target-size设置为 {decoder_output_size[0]},{decoder_output_size[1]}\n"
+                f"    2. 或者调整RAE配置（encoder_input_size和decoder_patch_size）以匹配target_size"
+            )
+
+        # 获取latent_channels
         latent_shape = vae_wrapper.get_latent_shape((3, target_size[0], target_size[1]))
         latent_channels = latent_shape[0]
     else:
@@ -401,8 +476,28 @@ def main():
         )
         data_module.setup()
 
-        # 从预处理数据获取target_size
-        target_size = tuple(data_module.metadata["target_size"])
+        # 从预处理数据获取target_size（如果之前没有读取）
+        if "target_size" not in locals() or target_size != tuple(
+            data_module.metadata["target_size"]
+        ):
+            target_size = tuple(data_module.metadata["target_size"])
+            print(f"从预处理数据读取target_size: {target_size}")
+
+            # 如果使用RAE，再次验证target_size
+            if args.vae_type == "rae":
+                if (
+                    target_size[0] != decoder_output_size[0]
+                    or target_size[1] != decoder_output_size[1]
+                ):
+                    raise ValueError(
+                        f"维度不匹配错误：\n"
+                        f"  预处理数据target_size: {target_size}\n"
+                        f"  RAE decoder输出尺寸: {decoder_output_size}\n"
+                        f"  原因：预处理数据使用的target_size与RAE decoder输出尺寸不匹配\n"
+                        f"  解决方案：\n"
+                        f"    1. 重新预处理数据，使用target_size={decoder_output_size[0]},{decoder_output_size[1]}\n"
+                        f"    2. 或者调整RAE配置（encoder_input_size和decoder_patch_size）以匹配预处理数据的target_size"
+                    )
 
     else:
         print("实时加载数据（内存模式）")
@@ -479,7 +574,10 @@ def main():
 
     print(f"训练配置:")
     print(f"  VAE类型: {args.vae_type}")
-    if args.vae_type == "rae":
+    if args.vae_type == "sd":
+        print(f"  VAE训练模式: {args.vae_train_mode}")
+        print(f"  VAE冻结: {args.freeze_vae}")
+    elif args.vae_type == "rae":
         print(f"  Encoder冻结: {args.freeze_encoder}")
         print(f"  Decoder冻结: {args.freeze_decoder}")
     print(f"  主batch size: {args.batch_size}")
@@ -497,9 +595,23 @@ def main():
         weight_decay=args.weight_decay,
     )
 
+    # 如果使用SD VAE且可训练，将VAE参数添加到优化器
+    if args.vae_type == "sd" and not args.freeze_vae:
+        vae_params = list(vae_wrapper.get_vae_parameters())
+        vae_param_count = sum(p.numel() for p in vae_params)
+        print(f"  VAE参数量: {vae_param_count:,} (可训练)")
+        # 创建新的优化器，包含UNet和VAE参数
+        all_params = list(model.parameters()) + vae_params
+        trainer.optimizer = torch.optim.AdamW(
+            all_params, lr=args.lr, weight_decay=args.weight_decay
+        )
+        print(f"✓ 优化器已更新：包含UNet和VAE参数")
+
     # 如果使用RAE且decoder可训练，将decoder参数添加到优化器
     if args.vae_type == "rae" and not args.freeze_decoder:
         decoder_params = list(vae_wrapper.get_decoder_parameters())
+        decoder_param_count = sum(p.numel() for p in decoder_params)
+        print(f"  Decoder参数量: {decoder_param_count:,} (可训练)")
         # 创建新的优化器，包含UNet和decoder参数
         all_params = list(model.parameters()) + decoder_params
         trainer.optimizer = torch.optim.AdamW(
