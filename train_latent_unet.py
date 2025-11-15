@@ -17,7 +17,9 @@ from weatherdiff.utils import WeatherDataModule
 class LatentUNetTrainer(UNetTrainer):
     """扩展训练器以支持潜空间训练"""
 
-    def __init__(self, model, vae_wrapper, vae_batch_size=4, use_multi_gpu=False, **kwargs):
+    def __init__(
+        self, model, vae_wrapper, vae_batch_size=4, use_multi_gpu=False, **kwargs
+    ):
         """
         Args:
             model: U-Net模型
@@ -44,7 +46,7 @@ class LatentUNetTrainer(UNetTrainer):
         latent_list = []
 
         # 使用主设备（VAE wrapper保持在主设备上）
-        device = self.main_device if hasattr(self, 'main_device') else self.device
+        device = self.main_device if hasattr(self, "main_device") else self.device
 
         for i in range(0, N, self.vae_batch_size):
             end_idx = min(i + self.vae_batch_size, N)
@@ -130,7 +132,28 @@ class LatentUNetTrainer(UNetTrainer):
 
             # 反向传播
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+
+            # 梯度裁剪：获取实际模型参数（如果是DataParallel）
+            if self.use_multi_gpu:
+                model_params = self.model.module.parameters()
+            else:
+                model_params = self.model.parameters()
+            torch.nn.utils.clip_grad_norm_(model_params, 1.0)
+
+            # 如果VAE可训练，也裁剪VAE参数的梯度
+            if isinstance(self.vae, SDVAEWrapper) and not self.vae.freeze_vae:
+                vae_params = list(self.vae.vae.parameters())
+                if vae_params:
+                    torch.nn.utils.clip_grad_norm_(vae_params, 1.0)
+            elif isinstance(self.vae, RAEWrapper):
+                # 检查decoder是否需要梯度
+                decoder_params = list(self.vae.get_decoder_parameters())
+                trainable_decoder_params = [
+                    p for p in decoder_params if p.requires_grad
+                ]
+                if trainable_decoder_params:
+                    torch.nn.utils.clip_grad_norm_(trainable_decoder_params, 1.0)
+
             self.optimizer.step()
 
             # 记录
@@ -370,12 +393,14 @@ def main():
     if use_multi_gpu:
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA不可用，无法使用多GPU训练")
-        
+
         # 检查GPU数量
         num_gpus = torch.cuda.device_count()
         if num_gpus < 2:
             print(f"警告: 只有 {num_gpus} 个GPU可用，将使用单GPU训练")
-            print(f"提示: 如需使用多GPU，请在shell脚本中设置CUDA_VISIBLE_DEVICES或在命令行中指定--gpu-ids")
+            print(
+                f"提示: 如需使用多GPU，请在shell脚本中设置CUDA_VISIBLE_DEVICES或在命令行中指定--gpu-ids"
+            )
             use_multi_gpu = False
         else:
             print(f"使用 {num_gpus} 个GPU进行训练")
@@ -386,20 +411,28 @@ def main():
                     print(f"  GPU {i}: {gpu_name}")
                 except Exception as e:
                     print(f"  GPU {i}: 无法获取信息 ({e})")
-            
+
             # 如果指定了GPU IDs但没有在环境变量中设置，给出提示
             if args.gpu_ids:
                 import os
-                env_gpu_ids = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+
+                env_gpu_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "")
                 if env_gpu_ids != args.gpu_ids:
-                    print(f"提示: 指定了--gpu-ids={args.gpu_ids}，但CUDA_VISIBLE_DEVICES={env_gpu_ids}")
-                    print(f"      建议在shell脚本中设置CUDA_VISIBLE_DEVICES={args.gpu_ids}以获得最佳效果")
-    
+                    print(
+                        f"提示: 指定了--gpu-ids={args.gpu_ids}，但CUDA_VISIBLE_DEVICES={env_gpu_ids}"
+                    )
+                    print(
+                        f"      建议在shell脚本中设置CUDA_VISIBLE_DEVICES={args.gpu_ids}以获得最佳效果"
+                    )
+
     # 更新device（多GPU时使用cuda:0作为主设备）
     if use_multi_gpu:
         device = "cuda:0"
     else:
         device = args.device
+
+    # 确保VAE使用正确的设备（多GPU时应该使用主设备cuda:0）
+    vae_device = device
 
     # 解析target_size
     h, w = map(int, args.target_size.split(","))
@@ -441,7 +474,7 @@ def main():
             model_id=args.vae_model_id,
             train_mode=args.vae_train_mode,
             pretrained_path=args.vae_pretrained_path,
-            device=args.device,
+            device=vae_device,
             freeze_vae=args.freeze_vae,
         )
         latent_channels = 4  # SD VAE固定为4
@@ -470,7 +503,7 @@ def main():
             decoder_patch_size=args.rae_decoder_patch_size,
             pretrained_decoder_path=args.rae_pretrained_decoder_path,
             normalization_stat_path=args.rae_normalization_stat_path,
-            device=args.device,
+            device=vae_device,
             freeze_encoder=args.freeze_encoder,
             freeze_decoder=args.freeze_decoder,
         )
@@ -631,7 +664,9 @@ def main():
     print(f"  设备: {device}")
     if use_multi_gpu:
         print(f"  多GPU训练: 是 ({torch.cuda.device_count()} 个GPU)")
-        print(f"  有效batch size: {args.batch_size * torch.cuda.device_count()} (每个GPU: {args.batch_size})")
+        print(
+            f"  有效batch size: {args.batch_size * torch.cuda.device_count()} (每个GPU: {args.batch_size})"
+        )
     else:
         print(f"  多GPU训练: 否")
     print(f"  VAE类型: {args.vae_type}")
