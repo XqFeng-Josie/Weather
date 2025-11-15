@@ -159,8 +159,12 @@ TRAIN_CMD="python train_latent_unet.py \
     --epochs $EPOCHS \
     --lr $LR \
     --early-stopping $EARLY_STOPPING \
-    --output-dir $OUTPUT_DIR \
-    --freeze-vae 
+    --output-dir $OUTPUT_DIR"
+
+# 添加freeze-vae参数
+if [ "$FREEZE_VAE" = true ]; then
+    TRAIN_CMD="$TRAIN_CMD --freeze-vae"
+fi
 
 # 添加多GPU参数
 if [ "$USE_MULTI_GPU" = true ]; then
@@ -240,7 +244,7 @@ if [ "$USE_MULTI_GPU" = true ]; then
     else
         echo "  使用GPU: 所有可用GPU"
     fi
-    echo "  有效batch size: $BATCH_SIZE × GPU数量 (每个GPU: $BATCH_SIZE)"
+    echo "  有效batch size: $BATCH_SIZE x GPU数量 (每个GPU: $BATCH_SIZE)"
 else
     echo "  多GPU训练: 否"
     if [ -n "$CUDA_VISIBLE_DEVICES" ]; then
