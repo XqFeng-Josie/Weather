@@ -62,6 +62,9 @@ DEPTH=3
 # 训练参数
 EPOCHS=1
 BATCH_SIZE=16        # 主batch size（lazy loading支持）
+GRADIENT_ACCUMULATION_STEPS=2  # 梯度累积步数（用于减少显存占用，有效batch = BATCH_SIZE × GRADIENT_ACCUMULATION_STEPS）
+USE_AMP=true         # 是否使用混合精度训练（FP16/BF16，可以显著减少显存占用）
+AMP_DTYPE="bfloat16" # 混合精度类型：float16 或 bfloat16（bfloat16更稳定，需要GPU支持）
 VAE_BATCH_SIZE=4     # VAE编码子批次（控制显存，可根据GPU调整）
 LR=0.0001
 EARLY_STOPPING=10
@@ -156,12 +159,18 @@ TRAIN_CMD="python train_latent_unet.py \
     --depth $DEPTH \
     --batch-size $BATCH_SIZE \
     --vae-batch-size $VAE_BATCH_SIZE \
+    --gradient-accumulation-steps $GRADIENT_ACCUMULATION_STEPS \
     --epochs $EPOCHS \
     --lr $LR \
     --early-stopping $EARLY_STOPPING \
     --output-dir $OUTPUT_DIR"
 
 # 添加freeze-vae参数
+
+# 添加混合精度训练参数
+if [ "$USE_AMP" = true ]; then
+    TRAIN_CMD="$TRAIN_CMD --use-amp --amp-dtype $AMP_DTYPE"
+fi
 if [ "$FREEZE_VAE" = true ]; then
     TRAIN_CMD="$TRAIN_CMD --freeze-vae"
 fi

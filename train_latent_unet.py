@@ -18,7 +18,15 @@ class LatentUNetTrainer(UNetTrainer):
     """扩展训练器以支持潜空间训练"""
 
     def __init__(
-        self, model, vae_wrapper, vae_batch_size=4, use_multi_gpu=False, **kwargs
+        self,
+        model,
+        vae_wrapper,
+        vae_batch_size=4,
+        use_multi_gpu=False,
+        gradient_accumulation_steps=1,
+        use_amp=False,
+        amp_dtype="float16",
+        **kwargs,
     ):
         """
         Args:
@@ -26,18 +34,46 @@ class LatentUNetTrainer(UNetTrainer):
             vae_wrapper: VAE包装器（不会被DataParallel包装，保持在主设备上）
             vae_batch_size: VAE编码时的子批次大小（用于控制显存）
             use_multi_gpu: 是否使用多GPU训练（DataParallel）
+            gradient_accumulation_steps: 梯度累积步数（用于减少显存占用）
+            use_amp: 是否使用自动混合精度训练
+            amp_dtype: 混合精度数据类型，可选 "float16" 或 "bfloat16"
             **kwargs: 其他参数传递给UNetTrainer
         """
         super().__init__(model, use_multi_gpu=use_multi_gpu, **kwargs)
         self.vae = vae_wrapper
         self.vae_batch_size = vae_batch_size
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.use_amp = use_amp
 
-    def _encode_in_batches(self, images):
+        # 设置混合精度
+        if use_amp:
+            if amp_dtype == "bfloat16":
+                if not torch.cuda.is_bf16_supported():
+                    print("警告: 当前GPU不支持bfloat16，将使用float16")
+                    amp_dtype = "float16"
+                self.amp_dtype = torch.bfloat16
+                self.scaler = None  # bfloat16不需要scaler
+            else:
+                self.amp_dtype = torch.float16
+                self.scaler = torch.cuda.amp.GradScaler()
+            print(f"✓ 启用混合精度训练: {amp_dtype}")
+        else:
+            self.amp_dtype = None
+            self.scaler = None
+
+        if gradient_accumulation_steps > 1:
+            print(f"✓ 启用梯度累积: {gradient_accumulation_steps} 步")
+            print(
+                f"  有效batch size: {kwargs.get('batch_size', 'N/A')} × {gradient_accumulation_steps} = {kwargs.get('batch_size', 0) * gradient_accumulation_steps if 'batch_size' in kwargs else 'N/A'}"
+            )
+
+    def _encode_in_batches(self, images, enable_grad=False):
         """
         分批编码图像到潜空间（避免显存溢出）
 
         Args:
             images: (N, C, H, W) 图像tensor
+            enable_grad: 是否启用梯度计算（仅在VAE可训练时）
 
         Returns:
             latents: 潜向量，shape取决于VAE类型
@@ -48,18 +84,38 @@ class LatentUNetTrainer(UNetTrainer):
         # 使用主设备（VAE wrapper保持在主设备上）
         device = self.main_device if hasattr(self, "main_device") else self.device
 
-        for i in range(0, N, self.vae_batch_size):
-            end_idx = min(i + self.vae_batch_size, N)
-            batch = images[i:end_idx].to(device)
-            latent_batch = self.vae.encode(batch)
-            latent_list.append(latent_batch.cpu())  # 立即移回CPU释放显存
+        # 使用适当的梯度上下文
+        grad_context = torch.enable_grad() if enable_grad else torch.no_grad()
 
-            # 清理显存
-            del batch, latent_batch
-            torch.cuda.empty_cache()
+        with grad_context:
+            for i in range(0, N, self.vae_batch_size):
+                end_idx = min(i + self.vae_batch_size, N)
+                batch = images[i:end_idx].to(device)
+
+                # 使用混合精度编码（如果启用）
+                if self.use_amp and self.amp_dtype is not None:
+                    with torch.cuda.amp.autocast(dtype=self.amp_dtype):
+                        latent_batch = self.vae.encode(batch)
+                else:
+                    latent_batch = self.vae.encode(batch)
+
+                # 如果不需要梯度，立即移到CPU释放显存
+                if not enable_grad:
+                    latent_list.append(latent_batch.cpu())
+                    del latent_batch
+                    torch.cuda.empty_cache()
+                else:
+                    latent_list.append(latent_batch)  # 保持梯度
+
+                # 清理显存
+                del batch
 
         # 合并所有batch，移回主设备
-        latents = torch.cat(latent_list, dim=0).to(device)
+        if enable_grad:
+            latents = torch.cat(latent_list, dim=0)
+        else:
+            latents = torch.cat(latent_list, dim=0).to(device)
+
         return latents
 
     def _get_latent_shape(self, image_shape):
@@ -82,10 +138,14 @@ class LatentUNetTrainer(UNetTrainer):
 
         total_loss = 0
         n_batches = 0
+        accumulation_counter = 0
 
         from tqdm import tqdm
 
         pbar = tqdm(train_loader, desc="Training (Latent)")
+
+        # 在epoch开始时清零梯度（用于梯度累积）
+        self.optimizer.zero_grad()
 
         for batch_idx, (inputs, targets) in enumerate(pbar):
             B, T_in, C, H, W = inputs.shape
@@ -110,57 +170,127 @@ class LatentUNetTrainer(UNetTrainer):
                     p.requires_grad for p in self.vae.vae.parameters()
                 )
                 encode_grad = vae_requires_grad  # VAE可训练时，使用梯度
-            with torch.set_grad_enabled(encode_grad):
-                # 编码输入（使用分批编码）
-                inputs_flat = inputs.reshape(B * T_in, C, H, W)
-                latent_inputs = self._encode_in_batches(inputs_flat)
-                latent_inputs = latent_inputs.reshape(
-                    B, T_in, latent_channels, latent_h, latent_w
-                )
 
-                # 编码目标（使用分批编码）
-                targets_flat = targets.reshape(B * T_out, C, H, W)
-                latent_targets = self._encode_in_batches(targets_flat)
-                latent_targets = latent_targets.reshape(
-                    B, T_out, latent_channels, latent_h, latent_w
-                )
+            # 编码输入（使用分批编码）
+            inputs_flat = inputs.reshape(B * T_in, C, H, W)
+            latent_inputs = self._encode_in_batches(
+                inputs_flat, enable_grad=encode_grad
+            )
+            latent_inputs = latent_inputs.reshape(
+                B, T_in, latent_channels, latent_h, latent_w
+            )
 
-            # 前向传播（在潜空间）
-            self.optimizer.zero_grad()
-            latent_outputs = self.model(latent_inputs)
-            loss = self.criterion(latent_outputs, latent_targets)
+            # 编码目标（使用分批编码）
+            targets_flat = targets.reshape(B * T_out, C, H, W)
+            latent_targets = self._encode_in_batches(
+                targets_flat, enable_grad=encode_grad
+            )
+            latent_targets = latent_targets.reshape(
+                B, T_out, latent_channels, latent_h, latent_w
+            )
 
-            # 反向传播
-            loss.backward()
+            # 清理输入数据的显存
+            del inputs_flat, targets_flat
+            if hasattr(inputs, "cpu"):
+                inputs = inputs.cpu()
+            if hasattr(targets, "cpu"):
+                targets = targets.cpu()
+            torch.cuda.empty_cache()
 
-            # 梯度裁剪：获取实际模型参数（如果是DataParallel）
-            if self.use_multi_gpu:
-                model_params = self.model.module.parameters()
+            # 前向传播（在潜空间）- 使用混合精度
+            if self.use_amp and self.amp_dtype is not None:
+                with torch.cuda.amp.autocast(dtype=self.amp_dtype):
+                    latent_outputs = self.model(latent_inputs)
+                    loss = self.criterion(latent_outputs, latent_targets)
+                    # 梯度累积时归一化loss
+                    loss = loss / self.gradient_accumulation_steps
             else:
-                model_params = self.model.parameters()
-            torch.nn.utils.clip_grad_norm_(model_params, 1.0)
+                latent_outputs = self.model(latent_inputs)
+                loss = self.criterion(latent_outputs, latent_targets)
+                # 梯度累积时归一化loss
+                loss = loss / self.gradient_accumulation_steps
 
-            # 如果VAE可训练，也裁剪VAE参数的梯度
-            if isinstance(self.vae, SDVAEWrapper) and not self.vae.freeze_vae:
-                vae_params = list(self.vae.vae.parameters())
-                if vae_params:
-                    torch.nn.utils.clip_grad_norm_(vae_params, 1.0)
-            elif isinstance(self.vae, RAEWrapper):
-                # 检查decoder是否需要梯度
-                decoder_params = list(self.vae.get_decoder_parameters())
-                trainable_decoder_params = [
-                    p for p in decoder_params if p.requires_grad
-                ]
-                if trainable_decoder_params:
-                    torch.nn.utils.clip_grad_norm_(trainable_decoder_params, 1.0)
+            # 反向传播（使用混合精度scaler）
+            if self.use_amp and self.scaler is not None:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
-            self.optimizer.step()
+            accumulation_counter += 1
 
-            # 记录
-            total_loss += loss.item()
+            # 只在累积到指定步数或最后一个batch时更新参数
+            if accumulation_counter >= self.gradient_accumulation_steps or (
+                batch_idx + 1
+            ) == len(train_loader):
+                # 使用混合精度scaler进行梯度裁剪和优化
+                if self.use_amp and self.scaler is not None:
+                    # 梯度裁剪：获取实际模型参数（如果是DataParallel）
+                    if self.use_multi_gpu:
+                        model_params = self.model.module.parameters()
+                    else:
+                        model_params = self.model.parameters()
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(model_params, 1.0)
+
+                    # 如果VAE可训练，也裁剪VAE参数的梯度
+                    if isinstance(self.vae, SDVAEWrapper) and not self.vae.freeze_vae:
+                        vae_params = list(self.vae.vae.parameters())
+                        if vae_params:
+                            torch.nn.utils.clip_grad_norm_(vae_params, 1.0)
+                    elif isinstance(self.vae, RAEWrapper):
+                        decoder_params = list(self.vae.get_decoder_parameters())
+                        trainable_decoder_params = [
+                            p for p in decoder_params if p.requires_grad
+                        ]
+                        if trainable_decoder_params:
+                            torch.nn.utils.clip_grad_norm_(
+                                trainable_decoder_params, 1.0
+                            )
+
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    # 梯度裁剪：获取实际模型参数（如果是DataParallel）
+                    if self.use_multi_gpu:
+                        model_params = self.model.module.parameters()
+                    else:
+                        model_params = self.model.parameters()
+                    torch.nn.utils.clip_grad_norm_(model_params, 1.0)
+
+                    # 如果VAE可训练，也裁剪VAE参数的梯度
+                    if isinstance(self.vae, SDVAEWrapper) and not self.vae.freeze_vae:
+                        vae_params = list(self.vae.vae.parameters())
+                        if vae_params:
+                            torch.nn.utils.clip_grad_norm_(vae_params, 1.0)
+                    elif isinstance(self.vae, RAEWrapper):
+                        decoder_params = list(self.vae.get_decoder_parameters())
+                        trainable_decoder_params = [
+                            p for p in decoder_params if p.requires_grad
+                        ]
+                        if trainable_decoder_params:
+                            torch.nn.utils.clip_grad_norm_(
+                                trainable_decoder_params, 1.0
+                            )
+
+                    self.optimizer.step()
+
+                self.optimizer.zero_grad()
+                accumulation_counter = 0
+
+            # 记录（恢复真实loss值）
+            total_loss += loss.item() * self.gradient_accumulation_steps
             n_batches += 1
 
-            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+            pbar.set_postfix(
+                {
+                    "loss": f"{loss.item() * self.gradient_accumulation_steps:.4f}",
+                    "accum": f"{accumulation_counter}/{self.gradient_accumulation_steps}",
+                }
+            )
+
+            # 清理显存
+            del latent_inputs, latent_targets, latent_outputs, loss
+            torch.cuda.empty_cache()
 
         avg_loss = total_loss / n_batches
         return avg_loss
@@ -337,6 +467,25 @@ def main():
         type=int,
         default=4,
         help="VAE编码时的子批次大小（控制显存占用）",
+    )
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=1,
+        help="梯度累积步数（用于减少显存占用，有效batch size = batch_size × gradient_accumulation_steps）",
+    )
+    parser.add_argument(
+        "--use-amp",
+        action="store_true",
+        default=False,
+        help="使用自动混合精度训练（FP16/BF16），可以显著减少显存占用",
+    )
+    parser.add_argument(
+        "--amp-dtype",
+        type=str,
+        default="float16",
+        choices=["float16", "bfloat16"],
+        help="混合精度数据类型（bfloat16需要GPU支持，但通常更稳定）",
     )
     parser.add_argument("--epochs", type=int, default=50, help="训练轮数")
     parser.add_argument("--lr", type=float, default=1e-4, help="学习率")
@@ -664,11 +813,20 @@ def main():
     print(f"  设备: {device}")
     if use_multi_gpu:
         print(f"  多GPU训练: 是 ({torch.cuda.device_count()} 个GPU)")
+        effective_batch = (
+            args.batch_size
+            * torch.cuda.device_count()
+            * args.gradient_accumulation_steps
+        )
         print(
-            f"  有效batch size: {args.batch_size * torch.cuda.device_count()} (每个GPU: {args.batch_size})"
+            f"  有效batch size: {effective_batch} (每个GPU: {args.batch_size}, 梯度累积: {args.gradient_accumulation_steps})"
         )
     else:
         print(f"  多GPU训练: 否")
+        effective_batch = args.batch_size * args.gradient_accumulation_steps
+        print(
+            f"  有效batch size: {effective_batch} (梯度累积: {args.gradient_accumulation_steps})"
+        )
     print(f"  VAE类型: {args.vae_type}")
     if args.vae_type == "sd":
         print(f"  VAE训练模式: {args.vae_train_mode}")
@@ -678,6 +836,11 @@ def main():
         print(f"  Decoder冻结: {args.freeze_decoder}")
     print(f"  主batch size: {args.batch_size}")
     print(f"  VAE batch size: {args.vae_batch_size} (用于分批编码)")
+    print(f"  梯度累积步数: {args.gradient_accumulation_steps}")
+    if args.use_amp:
+        print(f"  混合精度训练: 是 ({args.amp_dtype})")
+    else:
+        print(f"  混合精度训练: 否 (FP32)")
     print(f"  学习率: {args.lr}")
     print(f"  权重衰减: {args.weight_decay}")
     print(f"  早停耐心: {args.early_stopping}")
@@ -688,8 +851,12 @@ def main():
         vae_batch_size=args.vae_batch_size,
         device=device,
         use_multi_gpu=use_multi_gpu,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        use_amp=args.use_amp,
+        amp_dtype=args.amp_dtype,
         lr=args.lr,
         weight_decay=args.weight_decay,
+        batch_size=args.batch_size,  # 用于显示有效batch size
     )
 
     # 如果使用SD VAE且可训练，将VAE参数添加到优化器
