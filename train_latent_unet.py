@@ -17,15 +17,16 @@ from weatherdiff.utils import WeatherDataModule
 class LatentUNetTrainer(UNetTrainer):
     """扩展训练器以支持潜空间训练"""
 
-    def __init__(self, model, vae_wrapper, vae_batch_size=4, **kwargs):
+    def __init__(self, model, vae_wrapper, vae_batch_size=4, use_multi_gpu=False, **kwargs):
         """
         Args:
             model: U-Net模型
-            vae_wrapper: VAE包装器
+            vae_wrapper: VAE包装器（不会被DataParallel包装，保持在主设备上）
             vae_batch_size: VAE编码时的子批次大小（用于控制显存）
+            use_multi_gpu: 是否使用多GPU训练（DataParallel）
             **kwargs: 其他参数传递给UNetTrainer
         """
-        super().__init__(model, **kwargs)
+        super().__init__(model, use_multi_gpu=use_multi_gpu, **kwargs)
         self.vae = vae_wrapper
         self.vae_batch_size = vae_batch_size
 
@@ -42,9 +43,12 @@ class LatentUNetTrainer(UNetTrainer):
         N = images.shape[0]
         latent_list = []
 
+        # 使用主设备（VAE wrapper保持在主设备上）
+        device = self.main_device if hasattr(self, 'main_device') else self.device
+
         for i in range(0, N, self.vae_batch_size):
             end_idx = min(i + self.vae_batch_size, N)
-            batch = images[i:end_idx].to(self.device)
+            batch = images[i:end_idx].to(device)
             latent_batch = self.vae.encode(batch)
             latent_list.append(latent_batch.cpu())  # 立即移回CPU释放显存
 
@@ -52,8 +56,8 @@ class LatentUNetTrainer(UNetTrainer):
             del batch, latent_batch
             torch.cuda.empty_cache()
 
-        # 合并所有batch
-        latents = torch.cat(latent_list, dim=0).to(self.device)
+        # 合并所有batch，移回主设备
+        latents = torch.cat(latent_list, dim=0).to(device)
         return latents
 
     def _get_latent_shape(self, image_shape):
@@ -335,6 +339,18 @@ def main():
         default="cuda" if torch.cuda.is_available() else "cpu",
         help="设备",
     )
+    parser.add_argument(
+        "--use-multi-gpu",
+        action="store_true",
+        default=False,
+        help="使用多GPU训练（DataParallel）",
+    )
+    parser.add_argument(
+        "--gpu-ids",
+        type=str,
+        default=None,
+        help="指定使用的GPU ID（逗号分隔，如 '0,1,2,3'）。如果未指定，使用所有可用GPU",
+    )
     parser.add_argument("--num-workers", type=int, default=4, help="数据加载线程数")
     parser.add_argument(
         "--output-dir", type=str, default="outputs/latent_unet", help="输出目录"
@@ -345,6 +361,45 @@ def main():
 
     # 设置随机种子
     torch.manual_seed(args.seed)
+
+    # 处理多GPU设置
+    # 注意: CUDA_VISIBLE_DEVICES应该在Python启动前设置（在shell脚本中设置）
+    # 如果在这里设置，需要确保在导入torch之前设置，但此时torch已经导入
+    # 所以这里只做检查和提示
+    use_multi_gpu = args.use_multi_gpu
+    if use_multi_gpu:
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA不可用，无法使用多GPU训练")
+        
+        # 检查GPU数量
+        num_gpus = torch.cuda.device_count()
+        if num_gpus < 2:
+            print(f"警告: 只有 {num_gpus} 个GPU可用，将使用单GPU训练")
+            print(f"提示: 如需使用多GPU，请在shell脚本中设置CUDA_VISIBLE_DEVICES或在命令行中指定--gpu-ids")
+            use_multi_gpu = False
+        else:
+            print(f"使用 {num_gpus} 个GPU进行训练")
+            # 显示GPU信息
+            for i in range(num_gpus):
+                try:
+                    gpu_name = torch.cuda.get_device_name(i)
+                    print(f"  GPU {i}: {gpu_name}")
+                except Exception as e:
+                    print(f"  GPU {i}: 无法获取信息 ({e})")
+            
+            # 如果指定了GPU IDs但没有在环境变量中设置，给出提示
+            if args.gpu_ids:
+                import os
+                env_gpu_ids = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+                if env_gpu_ids != args.gpu_ids:
+                    print(f"提示: 指定了--gpu-ids={args.gpu_ids}，但CUDA_VISIBLE_DEVICES={env_gpu_ids}")
+                    print(f"      建议在shell脚本中设置CUDA_VISIBLE_DEVICES={args.gpu_ids}以获得最佳效果")
+    
+    # 更新device（多GPU时使用cuda:0作为主设备）
+    if use_multi_gpu:
+        device = "cuda:0"
+    else:
+        device = args.device
 
     # 解析target_size
     h, w = map(int, args.target_size.split(","))
@@ -573,6 +628,12 @@ def main():
     print("-" * 80)
 
     print(f"训练配置:")
+    print(f"  设备: {device}")
+    if use_multi_gpu:
+        print(f"  多GPU训练: 是 ({torch.cuda.device_count()} 个GPU)")
+        print(f"  有效batch size: {args.batch_size * torch.cuda.device_count()} (每个GPU: {args.batch_size})")
+    else:
+        print(f"  多GPU训练: 否")
     print(f"  VAE类型: {args.vae_type}")
     if args.vae_type == "sd":
         print(f"  VAE训练模式: {args.vae_train_mode}")
@@ -590,7 +651,8 @@ def main():
         model=model,
         vae_wrapper=vae_wrapper,
         vae_batch_size=args.vae_batch_size,
-        device=args.device,
+        device=device,
+        use_multi_gpu=use_multi_gpu,
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
@@ -600,8 +662,13 @@ def main():
         vae_params = list(vae_wrapper.get_vae_parameters())
         vae_param_count = sum(p.numel() for p in vae_params)
         print(f"  VAE参数量: {vae_param_count:,} (可训练)")
+        # 获取实际模型参数（如果是DataParallel）
+        if use_multi_gpu:
+            model_params = list(trainer.model.module.parameters())
+        else:
+            model_params = list(trainer.model.parameters())
         # 创建新的优化器，包含UNet和VAE参数
-        all_params = list(model.parameters()) + vae_params
+        all_params = model_params + vae_params
         trainer.optimizer = torch.optim.AdamW(
             all_params, lr=args.lr, weight_decay=args.weight_decay
         )
@@ -612,8 +679,13 @@ def main():
         decoder_params = list(vae_wrapper.get_decoder_parameters())
         decoder_param_count = sum(p.numel() for p in decoder_params)
         print(f"  Decoder参数量: {decoder_param_count:,} (可训练)")
+        # 获取实际模型参数（如果是DataParallel）
+        if use_multi_gpu:
+            model_params = list(trainer.model.module.parameters())
+        else:
+            model_params = list(trainer.model.parameters())
         # 创建新的优化器，包含UNet和decoder参数
-        all_params = list(model.parameters()) + decoder_params
+        all_params = model_params + decoder_params
         trainer.optimizer = torch.optim.AdamW(
             all_params, lr=args.lr, weight_decay=args.weight_decay
         )

@@ -54,7 +54,8 @@ class UNetTrainer:
                  lr: float = 1e-4,
                  weight_decay: float = 0.01,
                  loss_alpha: float = 0.8,
-                 loss_lambda: float = 0.1):
+                 loss_lambda: float = 0.1,
+                 use_multi_gpu: bool = False):
         """
         Args:
             model: U-Net模型
@@ -63,12 +64,43 @@ class UNetTrainer:
             weight_decay: 权重衰减
             loss_alpha: 损失函数alpha参数
             loss_lambda: 梯度损失权重
+            use_multi_gpu: 是否使用多GPU训练（DataParallel）
         """
-        self.model = model.to(device)
+        self.use_multi_gpu = use_multi_gpu
         self.device = device
         
+        # 检查多GPU可用性
+        if use_multi_gpu:
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA不可用，无法使用多GPU训练")
+            if torch.cuda.device_count() < 2:
+                print(f"警告: 只有 {torch.cuda.device_count()} 个GPU可用，将使用单GPU训练")
+                self.use_multi_gpu = False
+        
+        # 移动到主设备
+        if isinstance(device, str) and device.startswith('cuda'):
+            # 如果是多GPU，使用第一个GPU作为主设备
+            if self.use_multi_gpu:
+                self.main_device = torch.device(f'cuda:0')
+            else:
+                self.main_device = torch.device(device)
+        else:
+            self.main_device = torch.device(device)
+        
+        self.model = model.to(self.main_device)
+        
+        # 如果使用多GPU，用DataParallel包装模型
+        if self.use_multi_gpu:
+            self.model = nn.DataParallel(self.model)
+            print(f"✓ 使用多GPU训练: {torch.cuda.device_count()} 个GPU")
+            print(f"  主设备: {self.main_device}")
+            # 获取实际模型（用于优化器）
+            actual_model = self.model.module
+        else:
+            actual_model = self.model
+        
         self.optimizer = AdamW(
-            model.parameters(),
+            actual_model.parameters(),
             lr=lr,
             weight_decay=weight_decay
         )
@@ -92,8 +124,8 @@ class UNetTrainer:
             # 数据移到设备
             # inputs: (B, T_in, C, H, W)
             # targets: (B, T_out, C, H, W)
-            inputs = inputs.to(self.device)
-            targets = targets.to(self.device)
+            inputs = inputs.to(self.main_device)
+            targets = targets.to(self.main_device)
             
             B, T_in, C, H, W = inputs.shape
             T_out = targets.shape[1]
@@ -109,7 +141,12 @@ class UNetTrainer:
             
             # 反向传播
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            # 获取实际模型参数（用于梯度裁剪）
+            if self.use_multi_gpu:
+                model_params = self.model.module.parameters()
+            else:
+                model_params = self.model.parameters()
+            torch.nn.utils.clip_grad_norm_(model_params, 1.0)
             self.optimizer.step()
             
             # 记录
@@ -129,8 +166,8 @@ class UNetTrainer:
         n_batches = 0
         
         for inputs, targets in tqdm(val_loader, desc='Validating'):
-            inputs = inputs.to(self.device)
-            targets = targets.to(self.device)
+            inputs = inputs.to(self.main_device)
+            targets = targets.to(self.main_device)
             
             B, T_in, C, H, W = inputs.shape
             T_out = targets.shape[1]
@@ -198,9 +235,15 @@ class UNetTrainer:
                 best_val_loss = val_loss
                 patience_counter = 0
                 
+                # 如果使用DataParallel，需要保存实际模型的state_dict
+                if self.use_multi_gpu:
+                    model_state_dict = self.model.module.state_dict()
+                else:
+                    model_state_dict = self.model.state_dict()
+                
                 checkpoint = {
                     'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
+                    'model_state_dict': model_state_dict,
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'train_loss': train_loss,
                     'val_loss': val_loss,
@@ -220,9 +263,15 @@ class UNetTrainer:
             
             # 定期保存
             if (epoch + 1) % 10 == 0:
+                # 如果使用DataParallel，需要保存实际模型的state_dict
+                if self.use_multi_gpu:
+                    model_state_dict = self.model.module.state_dict()
+                else:
+                    model_state_dict = self.model.state_dict()
+                
                 checkpoint = {
                     'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
+                    'model_state_dict': model_state_dict,
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'train_loss': train_loss,
                     'val_loss': val_loss,

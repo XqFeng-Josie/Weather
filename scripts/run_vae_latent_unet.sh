@@ -10,7 +10,36 @@ set -e
 # ============================================================================
 
 # ============ GPU设置 ============
-export CUDA_VISIBLE_DEVICES=7
+# 单GPU模式（默认）
+# export CUDA_VISIBLE_DEVICES=7
+
+# 多GPU模式
+USE_MULTI_GPU=false  # 设置为true启用多GPU训练
+GPU_IDS=""  # 指定GPU IDs（如 "0,1,2,3"），留空使用所有可用GPU
+
+# 如果启用多GPU，取消注释并设置GPU IDs
+# USE_MULTI_GPU=true
+# GPU_IDS="0,1,2,3"  # 使用GPU 0, 1, 2, 3
+
+# 设置CUDA_VISIBLE_DEVICES
+if [ "$USE_MULTI_GPU" = true ]; then
+    # 多GPU模式
+    if [ -n "$GPU_IDS" ]; then
+        # 指定了GPU IDs，使用指定的GPU
+        export CUDA_VISIBLE_DEVICES=$GPU_IDS
+    else
+        # 未指定GPU IDs，不设置CUDA_VISIBLE_DEVICES，使用所有可用GPU
+        unset CUDA_VISIBLE_DEVICES
+    fi
+else
+    # 单GPU模式
+    if [ -n "$GPU_IDS" ]; then
+        # 指定了GPU IDs，使用第一个GPU
+        FIRST_GPU=$(echo $GPU_IDS | cut -d',' -f1)
+        export CUDA_VISIBLE_DEVICES=$FIRST_GPU
+    fi
+    # 如果未指定GPU_IDS，保持原有的CUDA_VISIBLE_DEVICES设置（如果有）
+fi
 
 # ============ 参数配置 ============
 VARIABLE="2m_temperature"
@@ -23,7 +52,7 @@ VAE_TYPE="sd"  # VAE类型: sd (Stable Diffusion) 或 rae
 VAE_MODEL_ID="stable-diffusion-v1-5/stable-diffusion-v1-5"  # SD VAE模型ID
 VAE_TRAIN_MODE="pretrained"  # VAE训练模式: pretrained (加载预训练) 或 from_scratch (从头训练)
 VAE_PRETRAINED_PATH=""  # 可选，预训练VAE权重路径（如果使用from_scratch但想加载特定权重）
-
+FREEZE_VAE=true
 # 模型参数
 INPUT_LENGTH=12
 OUTPUT_LENGTH=4
@@ -56,6 +85,19 @@ echo "VAE模型: $VAE_MODEL_ID"
 echo "VAE训练模式: $VAE_TRAIN_MODE"
 echo "预处理目录: $PREPROCESSED_DIR"
 echo "模型目录: $OUTPUT_DIR"
+if [ "$USE_MULTI_GPU" = true ]; then
+    echo "多GPU训练: 是"
+    if [ -n "$GPU_IDS" ]; then
+        echo "使用GPU: $GPU_IDS"
+    else
+        echo "使用GPU: 所有可用GPU"
+    fi
+else
+    echo "多GPU训练: 否"
+    if [ -n "$CUDA_VISIBLE_DEVICES" ]; then
+        echo "使用GPU: $CUDA_VISIBLE_DEVICES"
+    fi
+fi
 echo ""
 
 # ============================================================================
@@ -117,7 +159,16 @@ TRAIN_CMD="python train_latent_unet.py \
     --epochs $EPOCHS \
     --lr $LR \
     --early-stopping $EARLY_STOPPING \
-    --output-dir $OUTPUT_DIR"
+    --output-dir $OUTPUT_DIR \
+    --freeze-vae 
+
+# 添加多GPU参数
+if [ "$USE_MULTI_GPU" = true ]; then
+    TRAIN_CMD="$TRAIN_CMD --use-multi-gpu"
+    if [ -n "$GPU_IDS" ]; then
+        TRAIN_CMD="$TRAIN_CMD --gpu-ids $GPU_IDS"
+    fi
+fi
 
 # 添加可选参数
 if [ -n "$VAE_PRETRAINED_PATH" ]; then
@@ -179,6 +230,22 @@ echo "  VAE模型: $VAE_MODEL_ID"
 echo "  训练模式: $VAE_TRAIN_MODE"
 if [ -n "$VAE_PRETRAINED_PATH" ]; then
     echo "  预训练路径: $VAE_PRETRAINED_PATH"
+fi
+echo ""
+echo "GPU配置:"
+if [ "$USE_MULTI_GPU" = true ]; then
+    echo "  多GPU训练: 是"
+    if [ -n "$GPU_IDS" ]; then
+        echo "  使用GPU: $GPU_IDS"
+    else
+        echo "  使用GPU: 所有可用GPU"
+    fi
+    echo "  有效batch size: $BATCH_SIZE × GPU数量 (每个GPU: $BATCH_SIZE)"
+else
+    echo "  多GPU训练: 否"
+    if [ -n "$CUDA_VISIBLE_DEVICES" ]; then
+        echo "  使用GPU: $CUDA_VISIBLE_DEVICES"
+    fi
 fi
 echo ""
 echo "内存使用情况:"
