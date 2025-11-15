@@ -14,7 +14,7 @@ set -e
 # export CUDA_VISIBLE_DEVICES=7
 
 # 多GPU模式
-USE_MULTI_GPU=false  # 设置为true启用多GPU训练
+USE_MULTI_GPU=true  # 设置为true启用多GPU训练
 GPU_IDS=""  # 指定GPU IDs（如 "0,1,2,3"），留空使用所有可用GPU
 
 # 如果启用多GPU，取消注释并设置GPU IDs
@@ -43,16 +43,16 @@ fi
 
 # ============ 参数配置 ============
 VARIABLE="2m_temperature"
-TIME_SLICE="2015-01-01:2019-12-31"  # 5年完整数据
-PREDICTION_TIME_SLICE="2020-01-01:2020-12-31"
+TIME_SLICE="2019-01-01:2019-12-31"  # 5年完整数据
+PREDICTION_TIME_SLICE="2020-12-01:2020-12-31"
 # PREDICTION_TIME_SLICE="2020-01-01:2020-01-31"
 
 # VAE参数
 VAE_TYPE="sd"  # VAE类型: sd (Stable Diffusion) 或 rae
 VAE_MODEL_ID="stable-diffusion-v1-5/stable-diffusion-v1-5"  # SD VAE模型ID
-VAE_TRAIN_MODE="pretrained"  # VAE训练模式: pretrained (加载预训练) 或 from_scratch (从头训练)
+VAE_TRAIN_MODE="from_scratch"  # VAE训练模式: pretrained (加载预训练) 或 from_scratch (从头训练)
 VAE_PRETRAINED_PATH=""  # 可选，预训练VAE权重路径（如果使用from_scratch但想加载特定权重）
-FREEZE_VAE=true
+FREEZE_VAE=false
 # 模型参数
 INPUT_LENGTH=12
 OUTPUT_LENGTH=4
@@ -60,7 +60,7 @@ BASE_CHANNELS=128
 DEPTH=3
 
 # 训练参数
-EPOCHS=50
+EPOCHS=1
 BATCH_SIZE=16        # 主batch size（lazy loading支持）
 VAE_BATCH_SIZE=4     # VAE编码子批次（控制显存，可根据GPU调整）
 LR=0.0001
@@ -73,7 +73,7 @@ DATA_PATH="gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conse
 
 # 输出目录
 PREPROCESSED_DIR="data/preprocessed/vae_pre_${TIME_SLICE//:/_}_${TARGET_SIZE//,/x}"
-OUTPUT_DIR="outputs/vae_latent_unet_${VARIABLE}"
+OUTPUT_DIR="outputs/vae_latent_unet_${VARIABLE}_${VAE_TRAIN_MODE}"
 
 echo "========================================================================"
 echo "完整VAE潜空间U-Net训练流程"
@@ -257,4 +257,3 @@ echo "  预处理阶段: 分块处理，内存占用可控"
 echo "  训练阶段: Lazy loading，只加载当前batch，内存占用极小"
 echo "  峰值内存: < 5 GB（相比之前的28GB）"
 echo ""
-

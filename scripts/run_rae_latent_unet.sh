@@ -10,7 +10,7 @@ set -e
 # ============================================================================
 
 # ============ GPU设置 ============
-export CUDA_VISIBLE_DEVICES=7
+export CUDA_VISIBLE_DEVICES=1
 
 # ============ 参数配置 ============
 VARIABLE="2m_temperature"
@@ -23,10 +23,10 @@ VAE_TYPE="rae"
 RAE_ENCODER_CLS="MAEwNorm" # Dinov2withNorm MAEwNorm default: SigLIP2wNorm
 RAE_ENCODER_CONFIG_PATH="facebook/vit-mae-base" # facebook/dinov2-base facebook/vit-mae-base google/siglip2-base-patch16-256
 RAE_ENCODER_INPUT_SIZE=256
-RAE_DECODER_CONFIG_PATH="facebook/vit-mae-base"
+RAE_DECODER_CONFIG_PATH="configs/decoder/ViTXL"
 RAE_DECODER_PATCH_SIZE=16
-RAE_PRETRAINED_DECODER_PATH=""  # 可选，预训练decoder路径
-RAE_NORMALIZATION_STAT_PATH=""  # 可选，归一化统计量路径
+RAE_PRETRAINED_DECODER_PATH="models/decoders/mae/base_p16/ViTXL_n08/model.pt"  # 可选，预训练decoder路径
+RAE_NORMALIZATION_STAT_PATH="models/stats/mae/base_p16/ImageNet1k/stat.pt"  # 可选，归一化统计量路径
 FREEZE_ENCODER=true              # 冻结encoder（默认true）
 FREEZE_DECODER=false             # decoder可微调（默认false）
 
@@ -37,7 +37,7 @@ BASE_CHANNELS=128
 DEPTH=3
 
 # 训练参数
-EPOCHS=50
+EPOCHS=1
 BATCH_SIZE=16        # 主batch size（lazy loading支持）
 VAE_BATCH_SIZE=4     # VAE编码子批次（控制显存，可根据GPU调整）
 LR=0.0001
@@ -208,4 +208,3 @@ echo "  预处理阶段: 分块处理，内存占用可控"
 echo "  训练阶段: Lazy loading，只加载当前batch，内存占用极小"
 echo "  峰值内存: < 5 GB（相比之前的28GB）"
 echo ""
-

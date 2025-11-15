@@ -38,7 +38,7 @@ class SDVAEWrapper:
         self.device = device
         self.dtype = dtype
         self.model_id = model_id
-        self.train_mode = train_mode
+        self.vae_train_mode = train_mode  # 重命名以避免与方法名冲突
         self.pretrained_path = pretrained_path
         self.freeze_vae = freeze_vae
 
