@@ -1,5 +1,5 @@
 {
-  "mode": "pixel",
+  "mode": "pixel_unet",
   "normalized_space": {
     "mae": 0.012429495342075825,
     "rmse": 0.019875533878803253,

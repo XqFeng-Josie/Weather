@@ -23,7 +23,7 @@ from src.visualization import (
 
 
 # 模型数据格式映射
-SPATIAL_MODELS = ["cnn", "convlstm", "diffusion", "weather_transformer"]
+SPATIAL_MODELS = ["cnn", "convlstm", "weather_transformer"]
 FLAT_MODELS = ["lr", "lr_multi", "lstm", "transformer"]
 
 
@@ -63,12 +63,6 @@ def parse_args():
         help="Output format",
     )
     parser.add_argument(
-        "--num-inference-steps",
-        type=int,
-        default=None,
-        help="Number of inference steps for diffusion models (default: use model's default)",
-    )
-    parser.add_argument(
         "--visualize",
         action="store_true",
         help="Generate visualization plots",
@@ -82,7 +76,7 @@ def parse_args():
         "--batch-size",
         type=int,
         default=None,
-        help="Batch size for prediction (default: auto, 32 for diffusion, 256 for others)",
+        help="Batch size for prediction (default: auto, 256)",
     )
 
     return parser.parse_args()
@@ -202,26 +196,6 @@ def load_model_and_config(model_path, config_path=None):
             dropout=config.get("dropout", 0.1),
         )
 
-    elif model_name == "diffusion":
-        # 加载diffusion模型
-        from src.models.diffusion import DiffusionWeatherModel, DiffusionTrainer
-
-        model = DiffusionWeatherModel(
-            input_channels=config.get("input_channels", 1),
-            output_channels=config.get("output_channels", 1),
-            input_length=config.get("input_length", 12),
-            output_length=config.get("output_length", 4),
-            base_channels=config.get("base_channels", 64),
-            beta_schedule=config.get("beta_schedule", "cosine"),
-            num_timesteps=config.get("num_diffusion_steps", 1000),
-        )
-
-        # Diffusion使用专门的trainer
-        trainer = DiffusionTrainer(model, use_ema=config.get("use_ema", True))
-        trainer.load_checkpoint(model_path)
-
-        return model, trainer, config, data_format
-
     else:
         raise ValueError(f"Unknown model: {model_name}")
 
@@ -240,7 +214,6 @@ def generate_predictions(
     variables,
     input_length=12,
     output_length=4,
-    num_inference_steps=None,
     norm_params=None,
     batch_size=None,
 ):
@@ -264,28 +237,18 @@ def generate_predictions(
     print(f"Input shape: {X.shape}")
 
     # 预测（支持batch预测以节省内存）
-    from src.models.diffusion import DiffusionTrainer
-    
     # 判断是否需要batch预测
     n_samples = X.shape[0]
     
     # 确定batch size
     if batch_size is None:
-        # 自动选择batch size
-        if isinstance(trainer, DiffusionTrainer):
-            batch_size = 32  # Diffusion模型使用小batch
-            print(f"Using batch prediction for Diffusion model (batch_size={batch_size})")
-        else:
-            batch_size = 256  # 其他模型可以用大batch
+        batch_size = 256  # 默认batch size
     else:
         print(f"Using custom batch_size={batch_size}")
     
     # 如果样本数较少，直接一次预测
     if n_samples <= batch_size:
-        if isinstance(trainer, DiffusionTrainer) and num_inference_steps is not None:
-            y_pred = trainer.predict(X, num_inference_steps=num_inference_steps)
-        else:
-            y_pred = trainer.predict(X)
+        y_pred = trainer.predict(X)
     else:
         # 分batch预测
         print(f"Predicting in batches ({n_samples} samples, batch_size={batch_size})...")
@@ -294,12 +257,7 @@ def generate_predictions(
         for i in range(0, n_samples, batch_size):
             end_idx = min(i + batch_size, n_samples)
             X_batch = X[i:end_idx]
-            
-            if isinstance(trainer, DiffusionTrainer) and num_inference_steps is not None:
-                y_pred_batch = trainer.predict(X_batch, num_inference_steps=num_inference_steps)
-            else:
-                y_pred_batch = trainer.predict(X_batch)
-            
+            y_pred_batch = trainer.predict(X_batch)
             y_pred_list.append(y_pred_batch)
             
             # 打印进度
@@ -462,6 +420,115 @@ def save_predictions_numpy(results, output_path):
     print(f"✓ Saved to {output_path}")
 
 
+def denormalize_predictions(y_pred, y_true, variables, data_format, norm_params):
+    """
+    反归一化预测结果到物理单位
+    
+    Args:
+        y_pred: 归一化后的预测值
+        y_true: 归一化后的真值
+        variables: 变量列表
+        data_format: 数据格式 ('flat' 或 'spatial')
+        norm_params: 归一化参数 {'mean': {var: value}, 'std': {var: value}}
+    
+    Returns:
+        y_pred_phys, y_true_phys: 物理单位的预测和真值
+    """
+    if norm_params is None:
+        print("⚠️  警告: 没有归一化参数，无法反归一化")
+        return y_pred, y_true
+    
+    mean_dict = norm_params.get("mean", {})
+    std_dict = norm_params.get("std", {})
+    
+    if not mean_dict or not std_dict:
+        print("⚠️  警告: 归一化参数格式不正确，无法反归一化")
+        return y_pred, y_true
+    
+    # 复制数据以避免修改原始数组
+    y_pred_phys = y_pred.copy()
+    y_true_phys = y_true.copy()
+    
+    if data_format == "spatial":
+        # Spatial格式: (samples, lead_time, channels, H, W)
+        # 假设每个变量对应一个或多个通道
+        # 对于单变量，所有通道使用该变量的归一化参数
+        # 对于多变量，按顺序分配通道
+        
+        n_channels = y_pred.shape[2]
+        n_variables = len(variables)
+        
+        if n_variables == 1:
+            # 单变量：所有通道使用同一变量的归一化参数
+            var_name = variables[0]
+            if var_name in mean_dict and var_name in std_dict:
+                mean_val = mean_dict[var_name]
+                std_val = std_dict[var_name]
+                # 反归一化: x * std + mean
+                y_pred_phys = y_pred_phys * std_val + mean_val
+                y_true_phys = y_true_phys * std_val + mean_val
+                print(f"  反归一化: {var_name} (所有 {n_channels} 个通道)")
+            else:
+                print(f"⚠️  警告: 变量 {var_name} 的归一化参数不存在")
+        else:
+            # 多变量：假设每个变量对应一个通道（简化处理）
+            # 如果通道数不等于变量数，使用第一个变量的参数
+            if n_channels == n_variables:
+                for ch_idx, var_name in enumerate(variables):
+                    if var_name in mean_dict and var_name in std_dict:
+                        mean_val = mean_dict[var_name]
+                        std_val = std_dict[var_name]
+                        y_pred_phys[:, :, ch_idx, :, :] = (
+                            y_pred_phys[:, :, ch_idx, :, :] * std_val + mean_val
+                        )
+                        y_true_phys[:, :, ch_idx, :, :] = (
+                            y_true_phys[:, :, ch_idx, :, :] * std_val + mean_val
+                        )
+                        print(f"  反归一化通道 {ch_idx}: {var_name}")
+            else:
+                # 通道数与变量数不匹配，使用第一个变量的参数
+                var_name = variables[0]
+                if var_name in mean_dict and var_name in std_dict:
+                    mean_val = mean_dict[var_name]
+                    std_val = std_dict[var_name]
+                    y_pred_phys = y_pred_phys * std_val + mean_val
+                    y_true_phys = y_true_phys * std_val + mean_val
+                    print(f"⚠️  通道数({n_channels})与变量数({n_variables})不匹配，使用第一个变量 {var_name} 的参数")
+    
+    else:  # flat format
+        # Flat格式: (samples, lead_time, features)
+        # 特征被展平，需要知道每个特征对应的变量
+        # 简化处理：假设每个变量贡献相同数量的特征，或使用第一个变量的参数
+        
+        n_features = y_pred.shape[2]
+        n_variables = len(variables)
+        
+        if n_variables == 1:
+            # 单变量：所有特征使用该变量的归一化参数
+            var_name = variables[0]
+            if var_name in mean_dict and var_name in std_dict:
+                mean_val = mean_dict[var_name]
+                std_val = std_dict[var_name]
+                y_pred_phys = y_pred_phys * std_val + mean_val
+                y_true_phys = y_true_phys * std_val + mean_val
+                print(f"  反归一化: {var_name} (所有 {n_features} 个特征)")
+            else:
+                print(f"⚠️  警告: 变量 {var_name} 的归一化参数不存在")
+        else:
+            # 多变量：假设特征均匀分配给各变量
+            # 简化处理：使用第一个变量的参数（因为无法准确知道每个特征对应的变量）
+            var_name = variables[0]
+            if var_name in mean_dict and var_name in std_dict:
+                mean_val = mean_dict[var_name]
+                std_val = std_dict[var_name]
+                y_pred_phys = y_pred_phys * std_val + mean_val
+                y_true_phys = y_true_phys * std_val + mean_val
+                print(f"⚠️  多变量flat格式: 使用第一个变量 {var_name} 的参数进行反归一化")
+                print(f"   (注意: 这可能导致多变量情况下某些变量的反归一化不准确)")
+    
+    return y_pred_phys, y_true_phys
+
+
 def main():
     args = parse_args()
 
@@ -478,11 +545,6 @@ def main():
     # 从config读取变量列表（如果有的话）
     variables = config.get("variables", ["2m_temperature"])
 
-    # 设置推理步数（仅对diffusion模型有效）
-    num_inference_steps = args.num_inference_steps
-    if num_inference_steps is None and config.get("model") == "diffusion":
-        num_inference_steps = config.get("num_inference_steps", 50)
-
     # 获取归一化参数（关键！）
     norm_params = config.get("normalization", None)
     if norm_params is None:
@@ -497,7 +559,6 @@ def main():
         variables,
         input_length=config.get("input_length", 12),
         output_length=config.get("output_length", 4),
-        num_inference_steps=num_inference_steps,
         norm_params=norm_params,
         batch_size=args.batch_size,
     )
@@ -518,37 +579,100 @@ def main():
     y_true = results["y_true"]
     y_pred = results["y_pred"]
     
-    # 计算指标
-    metrics = compute_metrics(y_pred, y_true)
+    # 4.1 计算归一化空间的指标
+    print("\n" + "-" * 80)
+    print("归一化空间的指标")
+    print("-" * 80)
     
-    print("\nOverall Metrics:")
-    print(f"  RMSE: {metrics['rmse']:.4f}")
-    print(f"  MAE:  {metrics['mae']:.4f}")
+    metrics_norm = compute_metrics(y_pred, y_true)
     
-    print("\nPer Lead Time:")
+    print("\nOverall Metrics (Normalized Space):")
+    print(f"  RMSE: {metrics_norm['rmse']:.4f}")
+    print(f"  MAE:  {metrics_norm['mae']:.4f}")
+    
+    print("\nPer Lead Time (Normalized Space):")
     for t in range(y_true.shape[1]):
-        rmse_t = metrics[f"rmse_step_{t+1}"]
+        rmse_t = metrics_norm[f"rmse_step_{t+1}"]
         print(f"  Lead time {t+1}: RMSE = {rmse_t:.4f}")
     
-    # 多变量独立评估
+    # 多变量独立评估（归一化空间）
     if len(variables) > 1:
-        var_metrics = compute_variable_wise_metrics(
+        var_metrics_norm = compute_variable_wise_metrics(
             y_pred, y_true, len(variables), data_format
         )
         
-        print("\n" + "-" * 80)
-        print("Per-Variable Metrics")
-        print("-" * 80)
-        
+        print("\nPer-Variable Metrics (Normalized Space):")
         for var_idx, var_name in enumerate(variables):
-            rmse = var_metrics.get(f"var_{var_idx}_rmse", 0)
-            mae = var_metrics.get(f"var_{var_idx}_mae", 0)
+            rmse = var_metrics_norm.get(f"var_{var_idx}_rmse", 0)
+            mae = var_metrics_norm.get(f"var_{var_idx}_mae", 0)
             print(f"  {var_name}:")
             print(f"    RMSE: {rmse:.4f}")
             print(f"    MAE:  {mae:.4f}")
         
         # 合并到metrics字典
-        metrics.update(var_metrics)
+        metrics_norm.update(var_metrics_norm)
+    
+    # 4.2 反归一化到物理单位
+    print("\n" + "-" * 80)
+    print("反归一化到物理单位")
+    print("-" * 80)
+    
+    y_pred_phys, y_true_phys = denormalize_predictions(
+        y_pred, y_true, variables, data_format, norm_params
+    )
+    
+    # 显示物理值的范围
+    print(f"\n✓ 反归一化完成")
+    print(f"  预测范围: [{y_pred_phys.min():.2f}, {y_pred_phys.max():.2f}]")
+    print(f"  真值范围: [{y_true_phys.min():.2f}, {y_true_phys.max():.2f}]")
+    
+    # 4.3 计算物理空间的指标
+    print("\n" + "-" * 80)
+    print("物理空间的指标 (原始尺度)")
+    print("-" * 80)
+    
+    metrics_phys = compute_metrics(y_pred_phys, y_true_phys)
+    
+    print("\nOverall Metrics (Physical Space):")
+    print(f"  RMSE: {metrics_phys['rmse']:.4f}")
+    print(f"  MAE:  {metrics_phys['mae']:.4f}")
+    
+    print("\nPer Lead Time (Physical Space):")
+    T_out = y_true_phys.shape[1]
+    rmse_per_leadtime = {}
+    for t in range(T_out):
+        rmse_t = metrics_phys[f"rmse_step_{t+1}"]
+        rmse_per_leadtime[f"rmse_step_{t+1}"] = float(rmse_t)
+        print(f"  Lead time {t+1} ({(t+1)*6}h): RMSE = {rmse_t:.4f}")
+    
+    # 多变量独立评估（物理空间）
+    if len(variables) > 1:
+        var_metrics_phys = compute_variable_wise_metrics(
+            y_pred_phys, y_true_phys, len(variables), data_format
+        )
+        
+        print("\nPer-Variable Metrics (Physical Space):")
+        for var_idx, var_name in enumerate(variables):
+            rmse = var_metrics_phys.get(f"var_{var_idx}_rmse", 0)
+            mae = var_metrics_phys.get(f"var_{var_idx}_mae", 0)
+            print(f"  {var_name}:")
+            print(f"    RMSE: {rmse:.4f}")
+            print(f"    MAE:  {mae:.4f}")
+        
+        # 合并到metrics字典
+        metrics_phys.update(var_metrics_phys)
+    
+    # 4.4 合并所有指标
+    metrics = {
+        "mode": model_name,
+        "normalized_space": {k: float(v) for k, v in metrics_norm.items()},
+        "physical_space": {k: float(v) for k, v in metrics_phys.items()},
+        "physical_space_rmse_per_leadtime": rmse_per_leadtime,
+        "time_slice": args.time_slice,
+        "n_samples": int(y_pred.shape[0]),
+        "variables": variables,
+        "data_format": data_format,
+    }
     
     # 保存指标到文件
     output_dir = Path(args.output).parent
@@ -565,10 +689,10 @@ def main():
         
         model_name = config.get("model", "unknown")
         
-        # 生成可视化（非重叠样本）
+        # 生成可视化（使用物理值，不传入norm_params表示已经是物理值）
         visualize_predictions_improved(
-            y_true, y_pred, metrics, variables, model_name, output_dir, data_format,
-            norm_params=norm_params,
+            y_true_phys, y_pred_phys, metrics_phys, variables, model_name, output_dir, data_format,
+            norm_params=None,  # None表示数据已经是物理值
             spatial_coords=results.get("spatial_coords", None)
         )
         
@@ -578,9 +702,15 @@ def main():
     if args.save_predictions:
         pred_dir = output_dir / "predictions_data"
         pred_dir.mkdir(exist_ok=True)
-        np.save(pred_dir / "y_test.npy", y_true)
-        np.save(pred_dir / "y_test_pred.npy", y_pred)
+        # 保存归一化值
+        np.save(pred_dir / "y_test_norm.npy", y_true)
+        np.save(pred_dir / "y_test_pred_norm.npy", y_pred)
+        # 保存物理值
+        np.save(pred_dir / "y_test.npy", y_true_phys)
+        np.save(pred_dir / "y_test_pred.npy", y_pred_phys)
         print(f"✓ Predictions saved to {pred_dir}/")
+        print(f"  - y_test_norm.npy / y_test_pred_norm.npy: 归一化值")
+        print(f"  - y_test.npy / y_test_pred.npy: 物理值")
 
     print("\n✓ Done!")
 

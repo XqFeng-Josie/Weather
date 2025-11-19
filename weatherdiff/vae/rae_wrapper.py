@@ -20,7 +20,7 @@ class RAEWrapper:
         encoder_params: dict = None,
         decoder_config_path: str = "facebook/vit-mae-base",
         decoder_patch_size: int = 16,
-        pretrained_decoder_path: Optional[str] = None,
+        pretrained_decoder_path: str = None,
         normalization_stat_path: Optional[str] = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         dtype: torch.dtype = torch.float32,
@@ -35,13 +35,17 @@ class RAEWrapper:
             encoder_params: encoder参数字典
             decoder_config_path: decoder配置路径（HuggingFace模型ID）
             decoder_patch_size: decoder patch大小
-            pretrained_decoder_path: 预训练decoder权重路径
+            pretrained_decoder_path: 预训练decoder权重路径（必需，不支持从头训练）
             normalization_stat_path: 归一化统计量路径
             device: 设备
             dtype: 数据类型
             freeze_encoder: 是否冻结encoder（默认True）
             freeze_decoder: 是否冻结decoder（默认False，用于微调）
         """
+        if pretrained_decoder_path is None:
+            raise ValueError(
+                "pretrained_decoder_path 是必需的参数。RAE只支持加载预训练权重，不支持从头训练。"
+            )
         self.device = device
         self.dtype = dtype
         self.encoder_cls = encoder_cls

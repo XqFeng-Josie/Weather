@@ -10,103 +10,83 @@ from pathlib import Path
 class SDVAEWrapper:
     """Stable Diffusion VAE包装器
 
-    支持两种模式：
-    1. pretrained: 加载预训练的SD VAE（默认，用于推理）
-    2. from_scratch: 从头训练VAE（用于训练）
+    只支持加载预训练权重，不支持从头训练。
+    可以分别控制encoder和decoder的冻结状态。
     """
 
     def __init__(
         self,
         model_id: str = "runwayml/stable-diffusion-v1-5",
-        train_mode: str = "pretrained",
         pretrained_path: Optional[str] = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         dtype: torch.dtype = torch.float32,
-        freeze_vae: bool = False,
+        freeze_encoder: bool = False,
+        freeze_decoder: bool = False,
     ):
         """
         Args:
-            model_id: HuggingFace模型ID（用于获取配置或加载预训练权重）
-            train_mode: 训练模式
-                - "pretrained": 加载预训练权重（默认，用于推理）
-                - "from_scratch": 从头训练（随机初始化）
+            model_id: HuggingFace模型ID（用于加载预训练权重）
             pretrained_path: 可选，预训练权重路径（如果提供，会从此路径加载）
             device: 设备
             dtype: 数据类型
-            freeze_vae: 是否冻结VAE参数（默认False，允许训练）
+            freeze_encoder: 是否冻结encoder参数（默认False，允许训练）
+            freeze_decoder: 是否冻结decoder参数（默认False，允许训练）
         """
         self.device = device
         self.dtype = dtype
         self.model_id = model_id
-        self.vae_train_mode = train_mode  # 重命名以避免与方法名冲突
         self.pretrained_path = pretrained_path
-        self.freeze_vae = freeze_vae
+        self.freeze_encoder = freeze_encoder
+        self.freeze_decoder = freeze_decoder
 
         print(f"初始化 Stable Diffusion VAE")
         print(f"  模型ID: {model_id}")
-        print(f"  训练模式: {train_mode}")
         print(f"  设备: {device}, 数据类型: {dtype}")
-        print(f"  冻结VAE: {freeze_vae}")
+        print(f"  冻结Encoder: {freeze_encoder}")
+        print(f"  冻结Decoder: {freeze_decoder}")
 
         try:
             from diffusers import AutoencoderKL
 
-            if train_mode == "pretrained":
-                # 加载预训练权重
-                if pretrained_path:
-                    print(f"  从指定路径加载权重: {pretrained_path}")
-                    self.vae = AutoencoderKL.from_pretrained(
-                        model_id, subfolder="vae", torch_dtype=dtype
-                    )
-                    # 加载自定义权重
-                    state_dict = torch.load(pretrained_path, map_location=device)
-                    self.vae.load_state_dict(state_dict, strict=False)
-                    self.vae = self.vae.to(device)
-                else:
-                    print(f"  从HuggingFace加载预训练权重")
-                    self.vae = AutoencoderKL.from_pretrained(
-                        model_id, subfolder="vae", torch_dtype=dtype
-                    ).to(device)
-                print("✓ 预训练VAE加载成功")
-
-            elif train_mode == "from_scratch":
-                # 从头训练：使用配置创建模型，但不加载权重
-                print(f"  从头训练模式：使用配置创建模型")
-                # 先加载一个临时模型以获取配置
-                from diffusers import AutoencoderKL
-
-                temp_vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae")
-                # 从配置创建新模型（随机初始化，不加载权重）
-                self.vae = (
-                    AutoencoderKL.from_config(temp_vae.config).to(device).to(dtype)
+            # 只支持加载预训练权重
+            if pretrained_path:
+                print(f"  从指定路径加载权重: {pretrained_path}")
+                self.vae = AutoencoderKL.from_pretrained(
+                    model_id, subfolder="vae", torch_dtype=dtype
                 )
-                # 删除临时模型释放内存
-                del temp_vae
-                torch.cuda.empty_cache() if device == "cuda" else None
-
-                # 如果提供了预训练路径，加载权重（用于fine-tuning）
-                if pretrained_path:
-                    print(f"  加载预训练权重用于fine-tuning: {pretrained_path}")
-                    state_dict = torch.load(pretrained_path, map_location=device)
-                    self.vae.load_state_dict(state_dict, strict=False)
-
-                print("✓ 从头训练VAE创建成功")
+                # 加载自定义权重
+                state_dict = torch.load(pretrained_path, map_location=device)
+                self.vae.load_state_dict(state_dict, strict=False)
+                self.vae = self.vae.to(device)
             else:
-                raise ValueError(
-                    f"未知的训练模式: {train_mode}，支持的模式: pretrained, from_scratch"
-                )
+                print(f"  从HuggingFace加载预训练权重")
+                self.vae = AutoencoderKL.from_pretrained(
+                    model_id, subfolder="vae", torch_dtype=dtype
+                ).to(device)
+            print("✓ 预训练VAE加载成功")
 
-            # 设置训练/评估模式
-            if freeze_vae:
-                self.vae.eval()
-                for param in self.vae.parameters():
+            # 分别设置encoder和decoder的训练/评估模式
+            if freeze_encoder:
+                self.vae.encoder.eval()
+                for param in self.vae.encoder.parameters():
                     param.requires_grad = False
-                print("✓ VAE已冻结（仅用于推理）")
+                print("✓ Encoder已冻结（仅用于推理）")
             else:
-                self.vae.train()
-                for param in self.vae.parameters():
+                self.vae.encoder.train()
+                for param in self.vae.encoder.parameters():
                     param.requires_grad = True
-                print("✓ VAE可训练")
+                print("✓ Encoder可训练")
+
+            if freeze_decoder:
+                self.vae.decoder.eval()
+                for param in self.vae.decoder.parameters():
+                    param.requires_grad = False
+                print("✓ Decoder已冻结（仅用于推理）")
+            else:
+                self.vae.decoder.train()
+                for param in self.vae.decoder.parameters():
+                    param.requires_grad = True
+                print("✓ Decoder可训练")
 
         except Exception as e:
             print(f"✗ VAE初始化失败: {e}")
@@ -123,8 +103,8 @@ class SDVAEWrapper:
             latent: 潜向量，shape (B, 4, H//8, W//8)
         """
         x = x.to(self.device, dtype=self.dtype)
-        # 如果VAE被冻结，使用no_grad；否则允许梯度传播
-        if self.freeze_vae:
+        # 如果encoder被冻结，使用no_grad；否则允许梯度传播
+        if self.freeze_encoder:
             with torch.no_grad():
                 latent_dist = self.vae.encode(x).latent_dist
                 latent = latent_dist.sample() * self.vae.config.scaling_factor
@@ -145,8 +125,8 @@ class SDVAEWrapper:
         """
         latent = latent.to(self.device, dtype=self.dtype)
         latent = latent / self.vae.config.scaling_factor
-        # 如果VAE被冻结，使用no_grad；否则允许梯度传播
-        if self.freeze_vae:
+        # 如果decoder被冻结，使用no_grad；否则允许梯度传播
+        if self.freeze_decoder:
             with torch.no_grad():
                 x = self.vae.decode(latent).sample
         else:
@@ -184,15 +164,36 @@ class SDVAEWrapper:
 
     def get_vae_parameters(self):
         """获取VAE的可训练参数（用于优化器）"""
-        return self.vae.parameters()
+        params = []
+        if not self.freeze_encoder:
+            params.extend(self.vae.encoder.parameters())
+        if not self.freeze_decoder:
+            params.extend(self.vae.decoder.parameters())
+        return params
+    
+    def get_encoder_parameters(self):
+        """获取encoder的可训练参数（用于优化器）"""
+        if self.freeze_encoder:
+            return []
+        return self.vae.encoder.parameters()
+    
+    def get_decoder_parameters(self):
+        """获取decoder的可训练参数（用于优化器）"""
+        if self.freeze_decoder:
+            return []
+        return self.vae.decoder.parameters()
 
     def train_mode(self):
         """设置为训练模式"""
-        self.vae.train()
+        if not self.freeze_encoder:
+            self.vae.encoder.train()
+        if not self.freeze_decoder:
+            self.vae.decoder.train()
 
     def eval_mode(self):
         """设置为评估模式"""
-        self.vae.eval()
+        self.vae.encoder.eval()
+        self.vae.decoder.eval()
 
 
 def test_vae_reconstruction(

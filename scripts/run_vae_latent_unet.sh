@@ -2,11 +2,14 @@
 set -e
 
 # ============================================================================
-# 完整的潜空间U-Net训练流程（支持大规模数据）
+# 完整的VAE (SD) 潜空间U-Net训练流程（支持大规模数据）
+# 
+# 使用独立的 train_vae.py 和 predict_vae.py 脚本
 # 
 # 分两步：
 # Step 1: 预处理数据（一次性，可能需要1-2小时）
 # Step 2: 训练模型（使用lazy loading，内存占用小）
+# Step 3: 预测和评估
 # ============================================================================
 
 # ============ GPU设置 ============
@@ -15,7 +18,7 @@ set -e
 
 # 多GPU模式
 USE_MULTI_GPU=true  # 设置为true启用多GPU训练
-GPU_IDS=""  # 指定GPU IDs（如 "0,1,2,3"），留空使用所有可用GPU
+GPU_IDS="4,5"  # 指定GPU IDs（如 "0,1,2,3"），留空使用所有可用GPU
 
 # 如果启用多GPU，取消注释并设置GPU IDs
 # USE_MULTI_GPU=true
@@ -43,16 +46,16 @@ fi
 
 # ============ 参数配置 ============
 VARIABLE="2m_temperature"
-TIME_SLICE="2019-01-01:2019-12-31"  # 5年完整数据
-PREDICTION_TIME_SLICE="2020-12-01:2020-12-31"
-# PREDICTION_TIME_SLICE="2020-01-01:2020-01-31"
+TIME_SLICE="2015-01-01:2019-12-31"  # 训练数据时间范围
+PREDICTION_TIME_SLICE="2020-01-01:2020-12-31"  # 预测数据时间范围
+# PREDICTION_TIME_SLICE="2020-01-01:2020-01-31"  # 快速测试用
 
-# VAE参数
-VAE_TYPE="sd"  # VAE类型: sd (Stable Diffusion) 或 rae
-VAE_MODEL_ID="stable-diffusion-v1-5/stable-diffusion-v1-5"  # SD VAE模型ID
-VAE_TRAIN_MODE="from_scratch"  # VAE训练模式: pretrained (加载预训练) 或 from_scratch (从头训练)
-VAE_PRETRAINED_PATH=""  # 可选，预训练VAE权重路径（如果使用from_scratch但想加载特定权重）
-FREEZE_VAE=false
+# VAE参数（SD VAE仅支持加载预训练权重）
+VAE_MODEL_ID="stable-diffusion-v1-5/stable-diffusion-v1-5"  # SD VAE模型ID（HuggingFace）
+VAE_PRETRAINED_PATH=""  # 可选，覆盖默认预训练权重
+FREEZE_ENCODER=true     # 是否冻结encoder（默认false，允许微调）
+FREEZE_DECODER=false     # 是否冻结decoder（默认false，允许微调）
+
 # 模型参数
 INPUT_LENGTH=12
 OUTPUT_LENGTH=4
@@ -60,32 +63,39 @@ BASE_CHANNELS=128
 DEPTH=3
 
 # 训练参数
-EPOCHS=1
+EPOCHS=50
 BATCH_SIZE=16        # 主batch size（lazy loading支持）
 GRADIENT_ACCUMULATION_STEPS=2  # 梯度累积步数（用于减少显存占用，有效batch = BATCH_SIZE × GRADIENT_ACCUMULATION_STEPS）
 USE_AMP=true         # 是否使用混合精度训练（FP16/BF16，可以显著减少显存占用）
 AMP_DTYPE="bfloat16" # 混合精度类型：float16 或 bfloat16（bfloat16更稳定，需要GPU支持）
 VAE_BATCH_SIZE=4     # VAE编码子批次（控制显存，可根据GPU调整）
+DECODER_BATCH_SIZE=1  # Decoder解码子批次（用于decoder训练时控制显存，建议1-2。当decoder冻结时可设为与VAE_BATCH_SIZE相同）
 LR=0.0001
+WEIGHT_DECAY=0.01
 EARLY_STOPPING=10
 
 # 数据参数
 NORMALIZATION="minmax"
-TARGET_SIZE="512,512"  # 使用完整的512x512分辨率
+TARGET_SIZE="256,256"  # 使用完整的512x512分辨率（必须是8的倍数）
 DATA_PATH="gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr"
 
 # 输出目录
 PREPROCESSED_DIR="data/preprocessed/vae_pre_${TIME_SLICE//:/_}_${TARGET_SIZE//,/x}"
-OUTPUT_DIR="outputs/vae_latent_unet_${VARIABLE}_${VAE_TRAIN_MODE}"
+OUTPUT_DIR="outputs/vae_latent_unet_${VARIABLE}_${FREEZE_ENCODER}_${FREEZE_DECODER}"
 
 echo "========================================================================"
-echo "完整VAE潜空间U-Net训练流程"
+echo "完整VAE (SD) 潜空间U-Net训练流程"
 echo "========================================================================"
-echo "数据: $TIME_SLICE (5年完整数据)"
+echo "数据: $TIME_SLICE (训练数据)"
 echo "分辨率: $TARGET_SIZE (高分辨率)"
-echo "VAE类型: $VAE_TYPE"
+echo "VAE类型: SD (Stable Diffusion)"
 echo "VAE模型: $VAE_MODEL_ID"
-echo "VAE训练模式: $VAE_TRAIN_MODE"
+echo "VAE训练模式: 仅支持加载预训练权重"
+if [ -n "$VAE_PRETRAINED_PATH" ]; then
+    echo "VAE预训练路径: $VAE_PRETRAINED_PATH"
+fi
+echo "Encoder冻结: $FREEZE_ENCODER"
+echo "Decoder冻结: $FREEZE_DECODER"
 echo "预处理目录: $PREPROCESSED_DIR"
 echo "模型目录: $OUTPUT_DIR"
 if [ "$USE_MULTI_GPU" = true ]; then
@@ -142,16 +152,16 @@ fi
 
 echo ""
 echo "========================================================================"
-echo "Step 2: 训练潜空间U-Net（Lazy Loading）"
+echo "Step 2: 训练VAE (SD) 潜空间U-Net（使用train_vae.py）"
 echo "========================================================================"
 echo ""
 
 # 构建训练命令
-TRAIN_CMD="python train_latent_unet.py \
+TRAIN_CMD="python train_vae.py \
     --preprocessed-data-dir $PREPROCESSED_DIR \
-    --vae-type $VAE_TYPE \
+    --variable $VARIABLE \
+    --time-slice $TIME_SLICE \
     --vae-model-id $VAE_MODEL_ID \
-    --vae-train-mode $VAE_TRAIN_MODE \
     --target-size $TARGET_SIZE \
     --input-length $INPUT_LENGTH \
     --output-length $OUTPUT_LENGTH \
@@ -159,20 +169,27 @@ TRAIN_CMD="python train_latent_unet.py \
     --depth $DEPTH \
     --batch-size $BATCH_SIZE \
     --vae-batch-size $VAE_BATCH_SIZE \
+    --decoder-batch-size $DECODER_BATCH_SIZE \
     --gradient-accumulation-steps $GRADIENT_ACCUMULATION_STEPS \
     --epochs $EPOCHS \
     --lr $LR \
+    --weight-decay $WEIGHT_DECAY \
     --early-stopping $EARLY_STOPPING \
+    --normalization $NORMALIZATION \
     --output-dir $OUTPUT_DIR"
 
-# 添加freeze-vae参数
+# 添加encoder/decoder冻结参数
+if [ "$FREEZE_ENCODER" = true ]; then
+    TRAIN_CMD="$TRAIN_CMD --freeze-encoder"
+fi
+
+if [ "$FREEZE_DECODER" = true ]; then
+    TRAIN_CMD="$TRAIN_CMD --freeze-decoder"
+fi
 
 # 添加混合精度训练参数
 if [ "$USE_AMP" = true ]; then
     TRAIN_CMD="$TRAIN_CMD --use-amp --amp-dtype $AMP_DTYPE"
-fi
-if [ "$FREEZE_VAE" = true ]; then
-    TRAIN_CMD="$TRAIN_CMD --freeze-vae"
 fi
 
 # 添加多GPU参数
@@ -195,7 +212,7 @@ echo ""
 echo "✓ 训练完成!"
 
 # ============================================================================
-# Step 3: 预测和评估
+# Step 3: 预测和评估（使用predict_vae.py）
 # ============================================================================
 echo ""
 echo "========================================================================"
@@ -203,8 +220,7 @@ echo "Step 3: 预测和评估"
 echo "========================================================================"
 echo ""
 
-python predict_unet.py \
-    --mode latent \
+python predict_vae.py \
     --model-dir $OUTPUT_DIR \
     --data-path $DATA_PATH \
     --time-slice $PREDICTION_TIME_SLICE \
@@ -232,18 +248,22 @@ echo "  训练模型: $OUTPUT_DIR/"
 echo "    - best_model.pt: 最佳模型"
 echo "    - config.json: 训练配置"
 echo "    - training_history.json: 训练历史"
+echo "    - normalizer_stats.pkl: 归一化参数（包含VAE配置）"
 echo ""
 echo "  预测结果: $OUTPUT_DIR/"
 echo "    - prediction_metrics.json: 评估指标"
+echo "    - predictions_data/y_*.npy: 预测数据"
 echo "    - *.png: 可视化图片"
 echo ""
 echo "VAE配置:"
-echo "  VAE类型: $VAE_TYPE"
+echo "  VAE类型: SD (Stable Diffusion)"
 echo "  VAE模型: $VAE_MODEL_ID"
-echo "  训练模式: $VAE_TRAIN_MODE"
+echo "  训练模式: 仅预训练（SD权重）"
 if [ -n "$VAE_PRETRAINED_PATH" ]; then
     echo "  预训练路径: $VAE_PRETRAINED_PATH"
 fi
+echo "  Encoder冻结: $FREEZE_ENCODER"
+echo "  Decoder冻结: $FREEZE_DECODER"
 echo ""
 echo "GPU配置:"
 if [ "$USE_MULTI_GPU" = true ]; then
@@ -253,12 +273,13 @@ if [ "$USE_MULTI_GPU" = true ]; then
     else
         echo "  使用GPU: 所有可用GPU"
     fi
-    echo "  有效batch size: $BATCH_SIZE x GPU数量 (每个GPU: $BATCH_SIZE)"
+    echo "  有效batch size: $BATCH_SIZE x GPU数量 x $GRADIENT_ACCUMULATION_STEPS (每个GPU: $BATCH_SIZE, 梯度累积: $GRADIENT_ACCUMULATION_STEPS)"
 else
     echo "  多GPU训练: 否"
     if [ -n "$CUDA_VISIBLE_DEVICES" ]; then
         echo "  使用GPU: $CUDA_VISIBLE_DEVICES"
     fi
+    echo "  有效batch size: $BATCH_SIZE x $GRADIENT_ACCUMULATION_STEPS (梯度累积: $GRADIENT_ACCUMULATION_STEPS)"
 fi
 echo ""
 echo "内存使用情况:"

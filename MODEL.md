@@ -423,19 +423,15 @@ WeatherDiff是基于Stable Diffusion架构的天气预测模块，将气象网�
   - **输入**: `(batch, 4, H//8, W//8)` - 潜向量
   - **输出**: `(batch, channels, H, W)` - 范围[-1, 1]
 
-#### 训练模式
+#### 训练策略
 
-SD VAE支持两种训练模式：
+当前实现仅支持加载Stable Diffusion预训练VAE权重（默认从HuggingFace获取，可通过
+`--vae-pretrained-path` 指定自定义权重）。可分别控制encoder/decoder是否参与训练：
 
-1. **预训练模式** (`pretrained`，默认):
-   - 从HuggingFace加载预训练权重
-   - 适合快速开始，利用预训练特征
-   - 可以冻结VAE（`freeze_vae=True`）仅用于推理，或允许微调（`freeze_vae=False`）
-
-2. **从头训练模式** (`from_scratch`):
-   - 使用配置创建模型，随机初始化权重
-   - 适合需要完全自定义的训练
-   - 可以加载自定义预训练权重（`pretrained_path`）进行fine-tuning
+- `--freeze-encoder`: 冻结encoder，仅训练decoder+U-Net
+- `--freeze-decoder`: 冻结decoder，仅训练encoder+U-Net
+- 两者都加：完全冻结VAE，只训练U-Net
+- 不加：encoder/decoder与U-Net一同微调
 
 #### 工作原理
 
@@ -451,7 +447,7 @@ SD VAE支持两种训练模式：
   - ✅ 大幅降低计算复杂度（64倍压缩）
   - ✅ 预训练模型，无需从头训练
   - ✅ 潜空间更适合生成任务
-  - ✅ 支持VAE微调，可以针对天气数据优化
+  - ✅ 通过冻结开关灵活控制VAE微调范围
 
 - **局限**:
   - ❌ 重建误差较大（5-10K），可能丢失细节
@@ -462,7 +458,7 @@ SD VAE支持两种训练模式：
 
 - ✅ 大尺寸图像预测（512×512及以上）
 - ✅ 需要降低显存和计算量的场景
-- ✅ 需要针对天气数据微调VAE的场景（`from_scratch` + `freeze_vae=False`）
+- ✅ 需要针对天气数据微调VAE encoder/decoder的场景
 - ❌ 不适合需要高精度重建的任务
 
 ---
@@ -733,9 +729,9 @@ RAE解码 (批量，decoder可微调):
   - `vae_batch_size`: VAE编码/解码批次大小（控制显存）
   - **SD VAE特定参数**:
     - `vae_model_id`: SD VAE模型ID（默认'stable-diffusion-v1-5'）
-    - `vae_train_mode`: VAE训练模式，'pretrained'（默认）或 'from_scratch'
-    - `vae_pretrained_path`: 可选，预训练权重路径（用于fine-tuning）
-    - `freeze_vae`: 是否冻结VAE参数（默认True，仅推理）
+    - `vae_pretrained_path`: 可选，预训练权重路径（覆盖默认SD权重）
+    - `freeze_encoder`: 是否冻结encoder
+    - `freeze_decoder`: 是否冻结decoder
   - **RAE特定参数**:
     - `rae_encoder_cls`: Encoder类型（'Dinov2withNorm', 'SigLIP2wNorm', 'MAEwNorm'）
     - `rae_encoder_config_path`: Encoder配置路径
@@ -749,14 +745,13 @@ RAE解码 (批量，decoder可微调):
 
 1. **VAE编码**: 
    - **SD VAE**: 将输入图像编码到潜空间（压缩64倍，4通道）
-     - 支持预训练模式（`pretrained`）或从头训练模式（`from_scratch`）
-     - 可以冻结VAE（`freeze_vae=True`）仅用于推理，或允许微调（`freeze_vae=False`）
+     - 仅支持加载预训练权重，可自定义路径
+     - 通过 `freeze_encoder` / `freeze_decoder` 控制哪些部分参与训练
    - **RAE**: 将输入图像resize后编码到潜空间（latent_dim通道，如768）
 2. **潜空间预测**: U-Net在潜空间中预测未来帧
 3. **VAE解码**: 
    - **SD VAE**: 将预测的潜向量解码回像素空间
-     - 预训练模式：使用预训练decoder（固定或可微调）
-     - 从头训练模式：使用随机初始化或自定义权重的decoder（可微调）
+     - 默认解码器可训练，可通过 `freeze_decoder` 关闭微调
    - **RAE**: 将预测的潜向量解码回像素空间（可微调decoder）
 
 4. **优势**:
@@ -770,7 +765,7 @@ RAE解码 (批量，decoder可微调):
   - ✅ 训练更稳定
   - ✅ 生成结果更平滑
   - ✅ 适合大尺寸图像
-  - ✅ **SD VAE**: 支持VAE微调（`from_scratch` + `freeze_vae=False`），可以针对天气数据优化
+  - ✅ **SD VAE**: encoder/decoder均可单独微调
   - ✅ **RAE**: Decoder可微调，可能获得更好的重建质量
 
 - **局限**:

@@ -260,8 +260,9 @@ def main():
     print(f"  - normalizer_stats.pkl")
     
     print(f"\n使用方法:")
-    print(f"  修改train_latent_unet.py，使用以下参数:")
-    print(f"  --preprocessed-data-dir {output_dir}")
+    print(f"  将该目录传给潜空间训练脚本，例如:")
+    print(f"    python train_vae.py --preprocessed-data-dir {output_dir} ...")
+    print(f"    # 或 train_rae.py（如果使用RAE管线）")
     
     print(f"\n提示:")
     print(f"  - 预处理数据支持lazy loading")

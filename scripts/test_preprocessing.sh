@@ -46,5 +46,6 @@ cat $PREPROCESSED_DIR/metadata.json | python -m json.tool
 
 echo ""
 echo "测试完成！可以使用以下命令训练:"
-echo "python train_latent_unet.py --preprocessed-data-dir $PREPROCESSED_DIR --epochs 5"
+echo "python train_vae.py --preprocessed-data-dir $PREPROCESSED_DIR --epochs 5"
+echo "# 或根据需求使用 train_rae.py"
 
