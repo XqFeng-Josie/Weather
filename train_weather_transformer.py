@@ -45,6 +45,19 @@ def parse_args():
         help="Variables to predict",
     )
     parser.add_argument(
+        "--levels",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Pressure levels for variables with a level dimension "
+            "(e.g. 500 700 850). "
+            "如果指定，则只使用这些层的数据进行训练。"
+            "如果不指定，默认使用所有可用的 levels。"
+            "例如：`--levels 500` 只使用 500hPa，`--levels 500 700 850` 使用多个层。"
+        ),
+    )
+    parser.add_argument(
         "--time-slice",
         type=str,
         default="2000-01-01:2016-12-31",
@@ -74,32 +87,22 @@ def parse_args():
         default=[4, 8],
         help="Patch size (pH pW)",
     )
-    parser.add_argument(
-        "--d-model", type=int, default=128, help="Model dimension"
-    )
+    parser.add_argument("--d-model", type=int, default=128, help="Model dimension")
     parser.add_argument(
         "--n-heads", type=int, default=4, help="Number of attention heads"
     )
     parser.add_argument(
         "--n-layers", type=int, default=4, help="Number of encoder layers"
     )
-    parser.add_argument(
-        "--dropout", type=float, default=0.1, help="Dropout rate"
-    )
+    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate")
 
     # 训练参数
     parser.add_argument(
         "--epochs", type=int, default=100, help="Number of training epochs"
     )
-    parser.add_argument(
-        "--batch-size", type=int, default=32, help="Batch size"
-    )
-    parser.add_argument(
-        "--lr", type=float, default=1e-4, help="Learning rate"
-    )
-    parser.add_argument(
-        "--weight-decay", type=float, default=1e-5, help="Weight decay"
-    )
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--weight-decay", type=float, default=1e-5, help="Weight decay")
     parser.add_argument(
         "--early-stop", type=int, default=15, help="Early stopping patience"
     )
@@ -158,9 +161,17 @@ def main():
     print("Loading Data")
     print("=" * 80)
 
+    # 如果用户指定了 levels，则传给数据加载器
+    levels = args.levels
+    if levels is not None:
+        print(f"Using specified levels: {levels}")
+    else:
+        print("Using all available levels (default)")
+
     loader = WeatherDataLoader(
         data_path=args.data_path,
         variables=args.variables,
+        levels=levels,
     )
 
     start, end = args.time_slice.split(":")
@@ -184,7 +195,10 @@ def main():
     print("Creating Model")
     print("=" * 80)
 
-    n_channels = len(args.variables)
+    # 通道数应从实际数据形状推断，而不是简单等于变量个数
+    # 对于有level维度的变量（例如geopotential），每个level会被当作一个通道
+    # 此时 X 的形状为 (n_samples, time, n_channels, H, W)
+    n_channels = X.shape[2]
 
     model = WeatherTransformer(
         img_size=tuple(args.img_size),
@@ -202,7 +216,9 @@ def main():
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"\n模型: Weather Transformer")
     print(f"参数量: {n_params:,}")
-    print(f"模型维度: d_model={args.d_model}, n_heads={args.n_heads}, n_layers={args.n_layers}")
+    print(
+        f"模型维度: d_model={args.d_model}, n_heads={args.n_heads}, n_layers={args.n_layers}"
+    )
     print(f"Patch设置: img_size={args.img_size}, patch_size={args.patch_size}")
     print(f"时间步: input={args.input_length}, output={args.output_length}")
 
@@ -213,8 +229,9 @@ def main():
             loss_weights = [1.0] * len(args.variables)
         else:
             loss_weights = args.loss_weights
-            assert len(loss_weights) == len(args.variables), \
-                f"Loss weights ({len(loss_weights)}) must match variables ({len(args.variables)})"
+            assert len(loss_weights) == len(
+                args.variables
+            ), f"Loss weights ({len(loss_weights)}) must match variables ({len(args.variables)})"
 
         criterion = MultiVariableLoss(
             variable_names=args.variables,
@@ -245,18 +262,18 @@ def main():
     n_samples = X.shape[0]
     n_val = int(n_samples * args.val_split)
     n_train = n_samples - n_val
-    
+
     # 随机划分
     indices = np.random.permutation(n_samples)
     train_idx = indices[:n_train]
     val_idx = indices[n_train:]
-    
+
     X_train, y_train = X[train_idx], y[train_idx]
     X_val, y_val = X[val_idx], y[val_idx]
-    
+
     print(f"\n训练集: {X_train.shape[0]} samples")
     print(f"验证集: {X_val.shape[0]} samples")
-    
+
     history = trainer.train_pytorch_model(
         X_train,
         y_train,
@@ -269,6 +286,17 @@ def main():
     )
 
     # 6. 保存配置和历史
+    # 归一化参数：既可能是标量，也可能是按 level 的数组
+    def _to_serializable(x):
+        # 将 numpy 标量或数组转换为 Python 标量或列表，方便 JSON 序列化
+        if isinstance(x, np.ndarray):
+            return x.tolist()
+        try:
+            # numpy 标量或普通标量
+            return float(x)
+        except (TypeError, ValueError):
+            return x
+
     config = {
         "model": "weather_transformer",
         "data_path": args.data_path,
@@ -292,10 +320,13 @@ def main():
         "n_params": n_params,
         "input_channels": n_channels,
         "output_channels": n_channels,
+        # 记录实际使用的 levels（无 level 变量时此字段可选）
+        # loader.levels 会是实际使用的 levels（可能是默认值 [500, 700, 850] 或用户指定的值）
+        "levels": loader.levels,
         # 保存归一化参数（重要！）
         "normalization": {
-            "mean": {var: float(loader.mean[var]) for var in args.variables},
-            "std": {var: float(loader.std[var]) for var in args.variables},
+            "mean": {var: _to_serializable(loader.mean[var]) for var in args.variables},
+            "std": {var: _to_serializable(loader.std[var]) for var in args.variables},
         },
     }
 
@@ -305,8 +336,8 @@ def main():
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 
-    # with open(output_dir / "history.json", "w") as f:
-    #     json.dump(history, f, indent=2)
+    with open(output_dir / "history.json", "w") as f:
+        json.dump(history, f, indent=2)
 
     print(f"\n✓ 配置已保存: {output_dir / 'config.json'}")
     print(f"✓ 历史已保存: {output_dir / 'history.json'}")
@@ -324,6 +355,7 @@ def main():
 
     # 计算总体指标
     from src.visualization import compute_metrics
+
     metrics = compute_metrics(y_pred, y)
 
     print("\n总体指标:")
@@ -338,9 +370,7 @@ def main():
 
     # 计算每个变量的指标
     if len(args.variables) > 1:
-        var_metrics = compute_variable_wise_metrics(
-            y_pred, y, args.variables
-        )
+        var_metrics = compute_variable_wise_metrics(y_pred, y, args.variables)
         print("\n各变量指标:")
         for var, m in var_metrics.items():
             print(f"\n  {var}:")
@@ -373,4 +403,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

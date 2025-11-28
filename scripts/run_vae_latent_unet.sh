@@ -14,11 +14,10 @@ set -e
 
 # ============ GPU设置 ============
 # 单GPU模式（默认）
-# export CUDA_VISIBLE_DEVICES=7
 
 # 多GPU模式
-USE_MULTI_GPU=true  # 设置为true启用多GPU训练
-GPU_IDS="4,5"  # 指定GPU IDs（如 "0,1,2,3"），留空使用所有可用GPU
+USE_MULTI_GPU=false  # 设置为true启用多GPU训练
+GPU_IDS="1"  # 指定GPU IDs（如 "0,1,2,3"），留空使用所有可用GPU
 
 # 如果启用多GPU，取消注释并设置GPU IDs
 # USE_MULTI_GPU=true
@@ -45,7 +44,7 @@ else
 fi
 
 # ============ 参数配置 ============
-VARIABLE="2m_temperature"
+VARIABLES="${1:-specific_humidity}" # 2m_temperature,geopotential,specific_humidity
 TIME_SLICE="2015-01-01:2019-12-31"  # 训练数据时间范围
 PREDICTION_TIME_SLICE="2020-01-01:2020-12-31"  # 预测数据时间范围
 # PREDICTION_TIME_SLICE="2020-01-01:2020-01-31"  # 快速测试用
@@ -54,7 +53,7 @@ PREDICTION_TIME_SLICE="2020-01-01:2020-12-31"  # 预测数据时间范围
 VAE_MODEL_ID="stable-diffusion-v1-5/stable-diffusion-v1-5"  # SD VAE模型ID（HuggingFace）
 VAE_PRETRAINED_PATH=""  # 可选，覆盖默认预训练权重
 FREEZE_ENCODER=true     # 是否冻结encoder（默认false，允许微调）
-FREEZE_DECODER=false     # 是否冻结decoder（默认false，允许微调）
+FREEZE_DECODER=true     # 是否冻结decoder（默认false，允许微调）
 
 # 模型参数
 INPUT_LENGTH=12
@@ -74,6 +73,16 @@ LR=0.0001
 WEIGHT_DECAY=0.01
 EARLY_STOPPING=10
 
+
+
+if [ "$VARIABLES" == "geopotential" ]; then
+    LEVELS="500"
+elif [ "$VARIABLES" == "specific_humidity" ]; then
+    LEVELS="700"
+else
+    LEVELS=""
+fi
+
 # 数据参数
 NORMALIZATION="minmax"
 TARGET_SIZE="256,256"  # 使用完整的512x512分辨率（必须是8的倍数）
@@ -81,7 +90,7 @@ DATA_PATH="gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conse
 
 # 输出目录
 PREPROCESSED_DIR="data/preprocessed/vae_pre_${TIME_SLICE//:/_}_${TARGET_SIZE//,/x}"
-OUTPUT_DIR="outputs/vae_latent_unet_${VARIABLE}_${FREEZE_ENCODER}_${FREEZE_DECODER}"
+OUTPUT_DIR="outputs/vae_latent_unet_${VARIABLES}_${FREEZE_ENCODER}_${FREEZE_DECODER}"
 
 echo "========================================================================"
 echo "完整VAE (SD) 潜空间U-Net训练流程"
@@ -124,15 +133,24 @@ if [ ! -d "$PREPROCESSED_DIR" ]; then
     echo "预计输出大小: ~20-30 GB"
     echo ""
     
-    python preprocess_data_for_latent_unet.py \
+    # 构建预处理命令
+    PREPROCESS_CMD="python preprocess_data_for_latent_unet.py \
         --data-path $DATA_PATH \
-        --variable $VARIABLE \
+        --variable $VARIABLES \
         --time-slice $TIME_SLICE \
         --target-size $TARGET_SIZE \
         --n-channels 3 \
         --normalization $NORMALIZATION \
         --output-dir $PREPROCESSED_DIR \
-        --chunk-size 100
+        --chunk-size 100"
+    
+    # 如果指定了LEVELS，添加到命令中
+    if [ -n "$LEVELS" ]; then
+        PREPROCESS_CMD="$PREPROCESS_CMD --levels $LEVELS"
+    fi
+    
+    # 执行预处理命令
+    eval $PREPROCESS_CMD
     
     echo ""
     echo "✓ 数据预处理完成！"
@@ -159,7 +177,7 @@ echo ""
 # 构建训练命令
 TRAIN_CMD="python train_vae.py \
     --preprocessed-data-dir $PREPROCESSED_DIR \
-    --variable $VARIABLE \
+    --variable $VARIABLES \
     --time-slice $TIME_SLICE \
     --vae-model-id $VAE_MODEL_ID \
     --target-size $TARGET_SIZE \
@@ -176,7 +194,8 @@ TRAIN_CMD="python train_vae.py \
     --weight-decay $WEIGHT_DECAY \
     --early-stopping $EARLY_STOPPING \
     --normalization $NORMALIZATION \
-    --output-dir $OUTPUT_DIR"
+    --output-dir $OUTPUT_DIR \
+    --levels $LEVELS"
 
 # 添加encoder/decoder冻结参数
 if [ "$FREEZE_ENCODER" = true ]; then
@@ -206,7 +225,7 @@ if [ -n "$VAE_PRETRAINED_PATH" ]; then
 fi
 
 # 执行训练命令
-eval $TRAIN_CMD
+# eval $TRAIN_CMD
 
 echo ""
 echo "✓ 训练完成!"
@@ -220,12 +239,18 @@ echo "Step 3: 预测和评估"
 echo "========================================================================"
 echo ""
 
-python predict_vae.py \
+predict_cmd="python predict_vae.py \
     --model-dir $OUTPUT_DIR \
     --data-path $DATA_PATH \
     --time-slice $PREDICTION_TIME_SLICE \
     --batch-size 32 \
-    --vae-batch-size $VAE_BATCH_SIZE
+    --vae-batch-size $VAE_BATCH_SIZE "
+
+if [ -n "$LEVELS" ]; then
+    predict_cmd="$predict_cmd --levels $LEVELS"
+fi
+
+eval $predict_cmd
 
 echo ""
 echo "✓ 预测完成!"

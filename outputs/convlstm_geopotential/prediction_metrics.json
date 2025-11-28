@@ -1,0 +1,33 @@
+{
+  "mode": "convlstm_geopotential",
+  "normalized_space": {
+    "mse": 0.004222063978230115,
+    "rmse": 0.06497741129215687,
+    "mae": 0.03932334841573834,
+    "rmse_step_1": 0.022910635376040666,
+    "rmse_step_2": 0.04400788996553062,
+    "rmse_step_3": 0.07000966759762842,
+    "rmse_step_4": 0.09759769855502695
+  },
+  "physical_space": {
+    "mse": 48306.47786708169,
+    "rmse": 219.7873469221595,
+    "mae": 133.01198444995657,
+    "rmse_step_1": 77.49566603938786,
+    "rmse_step_2": 148.85753659339449,
+    "rmse_step_3": 236.8090509330946,
+    "rmse_step_4": 330.1260977398654
+  },
+  "physical_space_rmse_per_leadtime": {
+    "rmse_step_1": 77.49566603938786,
+    "rmse_step_2": 148.85753659339449,
+    "rmse_step_3": 236.8090509330946,
+    "rmse_step_4": 330.1260977398654
+  },
+  "time_slice": "2020-01-01:2020-12-31",
+  "n_samples": 1449,
+  "variables": [
+    "geopotential"
+  ],
+  "data_format": "spatial"
+}

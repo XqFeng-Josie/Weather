@@ -1,17 +1,22 @@
-# Weather Prediction System
+# Weather Prediction
 
 基于深度学习的气象预测系统，支持多种模型架构和预测方式。
 
-## 🎯 项目目标
+**[中文](README.md) | [English](README_EN.md)**
 
-本项目旨在使用深度学习技术进行全球天气预测，主要解决以下问题：
+## 📖 项目介绍
 
-- **短期天气预测**：预测未来1天（4个时间步，6小时间隔）的天气状况
-- **多变量预测**：支持温度、位势高度、风速等多个气象变量
-- **不确定性量化**：通过概率预测方法量化预测的不确定性
-- **全球覆盖**：基于ERA5全球再分析数据，分辨率64×32网格
+本项目是一个基于深度学习的全球天气预测研究项目，主要特点：
+
+- **预测任务**：基于过去3天（12个时间步，6小时间隔）的天气数据，预测未来1天（4个时间步）的天气状况
+- **多变量支持**：支持温度、位势高度、风速、比湿等多个气象变量
+- **多种模型**：从传统深度学习模型（CNN、ConvLSTM、Transformer）到基于Stable Diffusion的WeatherDiff模块
+- **不确定性量化**：通过Diffusion模型支持概率预测和不确定性估计
+- **全球覆盖**：基于ERA5全球再分析数据，支持64×32到512×512等多种分辨率
 
 ## 📊 数据说明
+
+![数据示例](assests/data_example.png)
 
 ### 数据源
 
@@ -48,132 +53,67 @@ Y: (n_samples, output_length, features)
 
 ## 🏗️ 模型架构
 
-### 1. 传统深度学习模型
+项目支持多种模型：
 
-#### Linear Regression (lr)
-- **原理**: Ridge回归，单变量快速基线
-- **特点**: 无时序建模，训练快速
-- **适用**: 快速基线测试
+- **Linear Regression**: 快速基线模型
+- **CNN**: 卷积神经网络，性能最佳（RMSE=1.20 K），训练快速
+- **ConvLSTM**: 时空联合建模，性能优秀（RMSE=1.24 K）
+- **LSTM**: 时间序列建模，适合单点预测
+- **Transformer**: 序列建模，没有时空信息，适合单点预测 
+- **Weather Transformer**: Factorized时空注意力，轻量级设计
 
-#### Multi-Output LR (lr_multi)
-- **原理**: 每个变量独立的Ridge模型
-- **特点**: 避免变量间干扰，支持并行训练
-- **适用**: 多变量基线
+基于Stable Diffusion架构，将气象数据视为图像进行预测：
 
-#### LSTM
-- **原理**: 循环神经网络，建模时间依赖
-- **结构**: 输入展平 → LSTM → 全连接
-- **局限**: 丢失空间信息
-- **适用**: 单变量时间序列
+- **Pixel U-Net**: 直接在像素空间预测，性能优异（RMSE=1.25 K）
+- **Latent U-Net**: 
+  - **SD VAE**: Stable Diffusion预训练VAE（512×512→64×64）
+  - **RAE**: Representation Autoencoder，支持多种encoder（DINOv2/SigLIP2/MAE）
+- **Diffusion Model**: 概率预测，支持不确定性量化
 
-#### CNN ⭐
-- **原理**: 卷积神经网络，提取空间特征
-- **结构**: Conv2D → BatchNorm → ReLU → FC
-- **优势**: 训练快速，性能最优（RMSE=1.20 K）
-- **局限**: 无时序建模
-- **推荐**: 快速部署的首选模型
+**详细模型架构请参考 [MODEL.md](MODEL.md) ([English](MODEL_EN.md))**
 
-#### ConvLSTM
-- **原理**: 结合CNN和LSTM，同时建模时空依赖
-- **结构**: ConvLSTM单元 → Conv2D输出
-- **优势**: 保留空间结构，建模时序
-- **表现**: RMSE=1.24 K，性能优秀
+## 🔬 Latent Codec 重建测试
 
-#### Weather Transformer
-- **原理**: Factorized时空注意力机制
-- **结构**: Patch Embedding → Spatial + Temporal Attention
-- **特点**: 轻量级设计，约1.6M参数
-- **适用**: 捕获长距离时空依赖
+在使用 Latent U-Net 进行天气预测之前，建议先测试不同 Latent Codec（编码器-解码器）的重建能力，选择最适合天气数据的 codec。
 
-### 2. WeatherDiff 模块 ⭐
+我们提供了完整的重建测试工具，支持：
 
-基于Stable Diffusion架构的天气预测模块，将气象网格数据视为图像，利用预训练VAE和U-Net架构进行时空预测。
+- **VAE (Stable Diffusion VAE)**: 预训练的 SD VAE
+- **RAE (Representation Autoencoder)**: 支持多种 encoder（DINOv2-B, MAE, SigLIP2 等）
+- **S-VAE (Hyperspherical VAE)**: 可自定义训练的 VAE
 
-**模块组成**：
-```
-weatherdiff/
-├── vae/          # VAE功能（SD VAE + RAE）
-│   ├── vae_wrapper.py    # SD VAE包装器
-│   ├── rae_wrapper.py    # RAE包装器
-│   └── rae/              # RAE核心模块
-│       ├── encoders/     # Encoder（DINOv2, SigLIP2, MAE）
-│       └── decoders/     # Decoder（可微调）
-├── unet/         # U-Net模型（像素和潜空间）
-├── diffusion/    # 扩散模型
-└── utils/        # 工具函数
-```
+### 📊 测试结果摘要
 
-#### Pixel U-Net ⭐
-- **原理**: 图像到图像的确定性预测
-- **结构**: U-Net架构，直接在像素空间预测
-- **输入**: 过去N帧图像 → 未来M帧图像
-- **特点**: 训练快速，结果确定，性能优异（RMSE=1.25 K）
-- **推荐**: WeatherDiff模块中表现最佳
+基于 1460 个测试样本的重建测试结果（2m_temperature，256×256）：
 
-#### Latent U-Net ⭐
-- **原理**: 在VAE潜空间中预测
-- **VAE选项**: 
-  - **SD VAE**: Stable Diffusion预训练VAE（默认）
-    - **权重**: 默认从HuggingFace加载，可用 `--vae-pretrained-path` 指定自定义权重
-    - **可训练性**: 通过 `--freeze-encoder/--freeze-decoder` 分别控制encoder/decoder是否参与训练
-    - **训练脚本**: `train_vae.py`
-    - **预测脚本**: `predict_vae.py`
-  - **RAE**: Representation Autoencoder（可选，支持多种encoder）
-    - **Encoder**: 固定（默认冻结），可选 DINOv2 / SigLIP2 / MAE
-    - **Decoder**: 可微调，支持加载预训练权重
-    - **训练脚本**: `train_rae.py`
-    - **预测脚本**: `predict_rae.py`
-- **优势**: 
-  - 显存需求低（512×512 → 64×64潜空间 for SD VAE）
-  - 训练更稳定
-  - 生成结果更平滑
-  - 支持针对encoder/decoder的细粒度微调配置
-  - **RAE**: Decoder可微调，可能获得更好的重建质量
-- **推荐**: 在大尺寸数据上训练时使用
+| Codec | RMSE (K) | 相关系数 | 推荐度 |
+|-------|----------|----------|--------|
+| **RAE-MAE** ⭐ | **0.94** | **0.999** | ⭐⭐⭐⭐⭐ 最佳 |
+| **VAE** | 2.35 | 0.998 | ⭐⭐⭐⭐ 优秀 |
+| **RAE-MAE_decXL** | 4.44 | 0.994 | ⭐⭐⭐ 良好 |
+| **RAE-DINOv2-B** | 4.92 | 0.972 | ⭐⭐⭐ 良好 |
 
-#### Diffusion Model ⭐
-- **原理**: 扩散模型，概率预测 (SD-VAE+U-Net+diffusion)
-- **训练**: 学习如何“去噪”未来潜向量，从噪声恢复出真实未来。
-- **推理**: 从噪声逐步去噪生成预测
-- **特点**:
-  - 支持生成多个未来场景
-  - 量化预测不确定性
-  - 适合集成预测
-- **推荐**: 需要不确定性估计时使用
-
-### 3. 模型对比
-
-| 模型 | 时空建模 | 训练速度 | 推理速度 | 不确定性 | 推荐场景 | 性能排名 |
-|------|---------|---------|---------|---------|---------|---------|
-| CNN | 空间 | ⚡⚡ | ⚡⚡⚡ | ✗ | 快速部署 ⭐ | #1 |
-| ConvLSTM | 时空 | ⚡ | ⚡⚡ | ✗ | 通用预测 ⭐ | #2 |
-| Pixel U-Net | 时空 | ⚡⚡ | ⚡⚡ | ✗ | WeatherDiff最佳 ⭐ | #3 |
-| Weather Transformer | 时空 | ⚡ | ⚡ | ✗ | 长距离依赖 | #4 |
-| Latent U-Net | 时空 | ⚡⚡ | ⚡⚡ | ✗ | 大尺寸图像 ⭐ | #5 |
-| LSTM | 时序 | ⚡⚡ | ⚡⚡ | ✗ | 单变量时序 | #6 |
-| Linear Regression | ✗ | ⚡⚡⚡ | ⚡⚡⚡ | ✗ | 快速基线 | #7 |
-| Transformer | 时空 | ⚡ | ⚡ | ✗ | 长距离依赖 | #8 |
-| Diffusion | 时空 | 🐢 | 🐢 | ✓ | 概率预测 ⭐ | - |
+**详细测试结果和完整指标请参考 [reconstruction/README.md](reconstruction/README.md)**
 
 ## 📈 评估指标
-
+<!-- 
 ### VAE重建指标
 
 - **相关系数**: 空间模式相似度
 - **SSIM**: 结构相似性指数（图像质量）
-- **PSNR**: 峰值信噪比（图像质量）
+- **PSNR**: 峰值信噪比（图像质量） -->
 
 ### 确定性指标
 - **RMSE** (Root Mean Square Error): 均方根误差，主要指标
 - **MAE** (Mean Absolute Error): 平均绝对误差
 
-### 概率指标（Diffusion模型）
+<!-- ### 概率指标（Diffusion模型）
 
 - **CRPS** (Continuous Ranked Probability Score): 概率分布质量
 - **Spread-Skill Ratio**: 集成校准（理想值 ≈ 1.0）
   - < 1.0: 过度自信
   - > 1.0: 不够自信
-- **Ensemble Mean RMSE**: 集成平均误差
+- **Ensemble Mean RMSE**: 集成平均误差 -->
 
 ### 时空分辨指标
 
@@ -181,276 +121,293 @@ weatherdiff/
 - **空间误差图**: 不同区域的预测精度
 - **时间序列图**: 预测值与真值的时间序列对比
 
-## 📁 项目结构
 
-```
-Weather/
-├── src/                       # 传统深度学习模型
-│   ├── data_loader.py         # 数据加载
-│   ├── trainer.py             # 训练器
-│   ├── visualization.py       # 可视化
-│   └── models/                # 模型实现
-│       ├── linear_regression.py
-│       ├── lstm.py
-│       ├── cnn.py
-│       ├── convlstm.py
-│       ├── transformer.py
-│       └── weather_transformer.py
-│
-├── weatherdiff/               # WeatherDiff模块 ⭐
-│   ├── vae/                   # VAE功能（SD VAE + RAE）
-│   │   ├── vae_wrapper.py     # SD VAE包装器
-│   │   ├── rae_wrapper.py     # RAE包装器
-│   │   └── rae/               # RAE核心模块
-│   ├── unet/                  # U-Net模型（像素/潜空间）
-│   ├── diffusion/             # 扩散模型
-│   └── utils/                 # 工具函数
-│
-├── scripts/                   # 运行脚本 ⭐
-│   ├── run_convlstm.sh
-│   ├── run_weather_transformer.sh
-│   ├── run_pixel_unet.sh
-│   ├── run_vae_latent_unet.sh  # VAE (SD) 独立训练脚本 ⭐
-│   ├── run_rae_latent_unet.sh  # RAE 独立训练脚本 ⭐
-│   └── run_diffusion.sh
-│
-├── train.py                   # 传统模型训练
-├── train_weather_transformer.py
-├── train_pixel_unet.py        # WeatherDiff像素空间训练脚本
-├── train_vae.py               # VAE (SD) 潜空间训练脚本
-├── train_rae.py               # RAE 潜空间训练脚本
-├── train_diffusion.py
-│
-├── predict.py                 # 传统模型预测
-├── predict_unet.py            # WeatherDiff统一预测脚本（支持pixel/latent模式）
-├── predict_vae.py             # VAE (SD) 独立预测脚本 ⭐ 新增
-├── predict_rae.py             # RAE 独立预测脚本 ⭐ 新增
-├── predict_diffusion.py
-│
-├── preprocess_data_for_latent_unet.py  # 数据预处理
-├── test_vae_reconstruction.py          # VAE重建测试
-├── compare_models.py                   # 模型对比
-│
-├── requirements.txt           # 基础依赖
-├── requirements_weatherdiff.txt  # WeatherDiff依赖
-├── README.md                  # 本文件 ⭐
-└── USAGE.md                   # 使用指南 ⭐
-```
+## 🔧 环境配置
 
-## 🚀 快速开始
-
-### 1. 安装依赖
-
-```bash
-# 基础依赖（传统模型）
-pip install -r requirements.txt
-
-# WeatherDiff额外依赖（如果使用WeatherDiff模块）
-pip install -r requirements_weatherdiff.txt
-```
-
-### 2. 快速训练示例
-
-#### 2.1 VAE (SD) Latent U-Net
-
-```bash
-# 使用预训练SD VAE（推荐，快速开始）
-bash scripts/run_vae_latent_unet.sh
-
-# 或手动运行
-python train_vae.py \
-    --data-path gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr \
-    --variable 2m_temperature \
-    --time-slice 2019-01-01:2019-12-31 \
-    --target-size 512,512 \
-    --batch-size 16 \
-    --epochs 50 \
-    --output-dir outputs/vae_latent_unet \
-    --freeze-decoder  # 示例：仅训练encoder
-
-# 预测
-python predict_vae.py \
-    --model-dir outputs/vae_latent_unet \
-    --time-slice 2020-01-01:2020-12-31
-```
-
-#### 2.2 RAE Latent U-Net
-
-```bash
-# 使用SigLIP2 encoder（推荐）
-bash scripts/run_rae_latent_unet.sh
-
-# 或手动运行
-python train_rae.py \
-    --data-path gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr \
-    --variable 2m_temperature \
-    --time-slice 2015-01-01:2019-12-31 \
-    --rae-encoder-cls SigLIP2wNorm \
-    --rae-encoder-config-path google/siglip2-base-patch16-256 \
-    --batch-size 16 \
-    --epochs 50 \
-    --output-dir outputs/rae_latent_unet
-
-# 预测
-python predict_rae.py \
-    --model-dir outputs/rae_latent_unet \
-    --time-slice 2020-01-01:2020-12-31
-```
-
-#### 2.3 Pixel U-Net
-
-```bash
-bash scripts/run_pixel_unet.sh
-```
-
-### 3. 查看结果
-
-训练完成后，结果保存在 `outputs/<model_name>/` 目录：
-
-```
-outputs/<model_name>/
-├── best_model.pt              # 最佳模型权重
-├── config.json                # 配置文件
-├── prediction_metrics.json    # 评估指标
-├── predictions_data/          # 预测数据
-├── timeseries_*.png          # 时间序列图
-├── spatial_comparison_*.png   # 空间对比图
-└── rmse_vs_leadtime_*.png    # RMSE vs预测步长
-```
-
-## 🔬 实验结果
-
-所有结果均为**物理空间**（温度单位：K）的评估指标。
-
-### 传统深度学习模型
-
-| 模型 | RMSE (K) | MAE (K) | RMSE Step 1 | RMSE Step 2 | RMSE Step 3 | RMSE Step 4 |
-|------|----------|---------|-------------|-------------|-------------|-------------|
-| CNN ⭐ | 1.2025 | 0.7530 | 0.7679 | 1.0615 | 1.3086 | 1.5347 |
-| ConvLSTM | 1.2417 | 0.7582 | 0.7360 | 1.0913 | 1.3648 | 1.6039 |
-| Weather Transformer | 1.3495 | 0.8630 | 0.9520 | 1.2247 | 1.4549 | 1.6618 |
-| LSTM | 2.5607 | 1.7288 | 2.5232 | 2.5430 | 2.5713 | 2.6044 |
-| Multi-Output LR | 2.6699 | 1.7560 | 2.2266 | 2.5490 | 2.8019 | 3.0344 |
-| Transformer | 3.3667 | 2.3004 | 3.3628 | 3.3710 | 3.3673 | 3.3659 |
-
-### WeatherDiff 模块
-
-| 模型 | RMSE (K) | MAE (K) | RMSE Step 1 | RMSE Step 2 | RMSE Step 3 | RMSE Step 4 |
-|------|----------|---------|-------------|-------------|-------------|-------------|
-| Pixel U-Net ⭐ | 1.2523 | 0.7832 | 0.7753 | 1.1281 | 1.3816 | 1.5782 |
-| Latent U-Net (SD-VAE, frozen) | 1.9212 | 1.4293 | 1.7892 | 1.8955 | 1.9479 | 2.0436 |
-| Latent U-Net (RAE, SigLIP2) | 13.6778 | 7.7200 | 13.5848 | 13.6952 | 13.7554 | 13.6755 |
-
-### 结果分析
-
-**最佳模型排序（按RMSE）**：
-1. **CNN** (1.20 K) - 最佳传统模型 ⭐
-2. **ConvLSTM** (1.24 K) - 次优传统模型
-3. **Pixel U-Net** (1.25 K) - 最佳WeatherDiff模型 ⭐
-4. **Weather Transformer** (1.35 K) - 基于ViT的Transformer
-
-**关键发现**：
-
-1. **传统模型 vs WeatherDiff**：
-   - 传统CNN模型表现最优（RMSE=1.20 K），略优于WeatherDiff的Pixel U-Net（RMSE=1.25 K）
-   - 两者性能相近，说明在64×32分辨率下，简单CNN也能取得很好效果
-   - ConvLSTM（RMSE=1.24 K）与Pixel U-Net性能相当
-
-2. **WeatherDiff模块表现**：
-   - Pixel U-Net表现最佳（RMSE=1.25 K），接近传统最佳模型
-   - Latent U-Net（SD-VAE）次之（RMSE=1.92 K），但明显优于RAE版本
-   - RAE版本表现较差（RMSE=13.68 K），可能需要进一步调优
-
-3. **预测步长分析**：
-   - 所有模型均显示误差随预测步长增加而增大（Step 1 → Step 4）
-   - CNN、ConvLSTM、Pixel U-Net在短期预测（6小时）表现优异（RMSE < 0.8 K）
-   - 长期预测（24小时）误差增长明显，但仍可接受（RMSE < 1.6 K for最佳模型）
-
-4. **模型选择建议**：
-   - **快速部署**：选择CNN，训练快速，性能最优
-   - **平衡性能与可扩展性**：选择ConvLSTM或Pixel U-Net
-   - **大尺寸图像**：选择Latent U-Net（SD-VAE），显存友好
-   - **长距离依赖**：选择Weather Transformer
-
-**说明**：
-- Step 1-4 分别对应未来6、12、18、24小时的预测
-- 所有指标均在物理空间计算（单位：开尔文 K）
-- 数据变量：2m_temperature（2米温度）
-
-## 🔧 使用指南
-
-### 环境配置
+### 安装依赖
 
 ```bash
 # 创建虚拟环境
 python3 -m venv venv
 source venv/bin/activate
 
-# 安装基础依赖
+# 安装基础依赖（包含WeatherDiff所需依赖）
 pip install -r requirements.txt
-
-# 安装WeatherDiff额外依赖
-pip install -r requirements_weatherdiff.txt
 ```
 
-### VAE vs RAE 实验设计
+## 🚀 脚本运行
 
-#### VAE (SD) Latent U-Net 实验设计
+### 传统模型
 
-**预训练权重**：
-- 默认直接从 HuggingFace (`stable-diffusion-v1-5/stable-diffusion-v1-5`) 拉取
-- 若有自定义权重，可通过 `--vae-pretrained-path /path/to/weights.pt` 指定
+```bash
+# CNN（推荐，性能最佳）
+bash scripts/run_cnn.sh 2m_temperature
 
-**微调策略**：
-- `--freeze-encoder`: 仅冻结encoder（默认不冻结）
-- `--freeze-decoder`: 仅冻结decoder（默认不冻结）
-- 两个都加：完全冻结VAE，只训练U-Net
+# ConvLSTM（时空建模）
+bash scripts/run_convlstm.sh 2m_temperature
 
-**推荐配置**：
-- 快速开始：全部冻结（`--freeze-encoder --freeze-decoder`）
-- 进阶微调：冻结decoder，仅训练encoder（`--freeze-decoder`）
-- 全量微调：不加任何freeze参数，encoder/decoder与U-Net一起训练
+# Weather Transformer
+bash scripts/run_weather_transformer.sh 2m_temperature
 
-#### RAE Latent U-Net 实验设计
+# Pixel U-Net
+bash scripts/run_pixel_unet.sh 2m_temperature
 
-**Encoder选项**：
-1. **SigLIP2wNorm** (推荐)：SigLIP-2模型，性能优秀
-   - 配置：`--rae-encoder-cls SigLIP2wNorm --rae-encoder-config-path google/siglip2-base-patch16-256`
-   
-2. **Dinov2withNorm**：DINOv2模型，稳定可靠
-   - 配置：`--rae-encoder-cls Dinov2withNorm --rae-encoder-config-path facebook/dinov2-base`
-   
-3. **MAEwNorm**：MAE模型，适合特定场景
-   - 配置：`--rae-encoder-cls MAEwNorm --rae-encoder-config-path facebook/vit-mae-base`
+# VAE (SD) Latent U-Net
+bash scripts/run_vae_latent_unet.sh 2m_temperature
 
-**训练策略**：
-- Encoder：固定（`--freeze-encoder`，默认true），不参与训练
-- Decoder：可微调（默认false），支持从预训练权重fine-tuning
-  - 加载预训练：`--rae-pretrained-decoder-path /path/to/decoder.pt`
-  - 加载归一化统计：`--rae-normalization-stat-path /path/to/stat.pt`
+# RAE Latent U-Net
+bash scripts/run_rae_latent_unet.sh 2m_temperature
 
-**target_size说明**：
-- RAE的`target_size`由decoder输出尺寸自动确定，不能手动指定
-- 预处理时使用`encoder_input_size`作为初始估计
-- 训练时会自动验证并调整（如果不匹配会报错）
+# Diffusion模型（概率预测）
+bash scripts/run_diffusion.sh
+```
 
-**推荐配置**：
-- 标准配置：SigLIP2 + ViT-MAE decoder（256x256）
-- 高分辨率：调整`encoder_input_size`和`decoder_patch_size`（需重新预处理）
+**注意**：
+- VAE/RAE Latent U-Net需要先预处理数据（脚本会自动处理）
+- 大尺寸图像（512×512）建议使用Latent U-Net以节省显存
+- 支持混合精度训练（`--use-amp --amp-dtype bfloat16`）和梯度累积（`--gradient-accumulation-steps 2`）
 
-### 实验对比建议
+### Latent Codec 重建测试
 
-**VAE (SD) vs RAE**：
-- **显存占用**：SD VAE (512x512→64x64) vs RAE (256x256→16x16)
-- **训练速度**：RAE通常更快（decoder参数更少）
-- **重建质量**：RAE可能更好（可微调decoder）
-- **灵活性**：SD VAE更成熟，RAE更灵活（多种encoder选择）
+在使用 Latent U-Net 之前，建议先测试不同 codec 的重建能力：
 
-**参数调优建议**：
-1. 先使用推荐配置快速验证
-2. 根据显存调整`batch_size`和`vae_batch_size`
-3. 启用混合精度训练（`--use-amp --amp-dtype bfloat16`）
-4. 使用梯度累积（`--gradient-accumulation-steps 2`）减少显存
+```bash
+# 测试 VAE 重建
+python reconstruction/test_vae_reconstruction.py \
+    --data-path reconstruction/weather_images \
+    --n-test-samples 100
+
+# 测试 RAE 重建（批量测试多个encoder）
+cd reconstruction
+bash test_rae_reconstruction.sh
+
+# 对比多个 codec 的重建效果
+python reconstruction/compare_reconstructions.py \
+    --original-dir reconstruction/weather_images \
+    --reconstructed-dirs \
+        outputs/vae_reconstruction/reconstructed \
+        outputs/rae_reconstruction/recon_samples_DINOv2-B/RAE-pretrained-bs4-fp32 \
+    --labels VAE RAE-DINOv2-B \
+    --output comparison.png
+```
+
+详细说明请参考 [reconstruction/README.md](reconstruction/README.md)
+
+## 🔬 实验结果
+
+所有结果均为**物理空间**的评估指标。评估了三个主要气象变量：2米温度、位势高度和比湿。
+
+### 1. 2米温度 (2m_temperature)
+
+| 模型 | MSE | MAE (K) | RMSE (K) | Step 1 | Step 2 | Step 3 | Step 4 |
+|------|-----|---------|----------|--------|---------|--------|--------|
+| **CNN** ⭐ | 1.446 | 0.753 | **1.203** | 0.768 | 1.061 | 1.309 | 1.535 |
+| **ConvLSTM** | 1.542 | 0.758 | 1.242 | 0.736 | 1.091 | 1.365 | 1.604 |
+| **Pixel U-Net** ⭐ | - | 0.783 | 1.252 | 0.775 | 1.128 | 1.382 | 1.578 |
+| **Weather Transformer** | 1.821 | 0.863 | 1.349 | 0.952 | 1.225 | 1.455 | 1.662 |
+| LSTM | 6.557 | 1.729 | 2.561 | 2.523 | 2.543 | 2.571 | 2.604 |
+| Multi-Output LR | 7.128 | 1.756 | 2.670 | 2.227 | 2.549 | 2.802 | 3.034 |
+| Transformer | 11.335 | 2.300 | 3.367 | 3.363 | 3.371 | 3.367 | 3.366 |
+| Latent U-Net (SD-VAE) | - | 7.228 | 8.115 | 7.653 | 8.520 | 8.039 | 8.221 |
+| Latent U-Net (RAE, MAE) | - | 8.755 | 17.257 | 17.177 | 17.306 | 17.227 | 17.317 |
+
+### 2. 位势高度 (geopotential)
+
+| 模型 | MSE | MAE (m²/s²) | RMSE (m²/s²) | Step 1 | Step 2 | Step 3 | Step 4 |
+|------|-----|-------------|--------------|--------|---------|--------|--------|
+| **CNN** ⭐ | 37938 | 123.2 | **194.8** | 89.5 | 140.8 | 211.0 | 281.7 |
+| **Pixel U-Net** | - | 138.8 | 201.7 | 107.8 | 156.0 | 216.2 | 283.0 |
+| **Weather Transformer** | 43920 | 140.5 | 209.6 | 117.6 | 165.9 | 225.9 | 288.6 |
+| **ConvLSTM** | 48306 | 133.0 | 219.8 | 77.5 | 148.9 | 236.8 | 330.1 |
+| Multi-Output LR | 400591 | 416.7 | 632.9 | 364.5 | 540.2 | 699.7 | 829.5 |
+| LSTM | 485145 | 501.2 | 696.5 | 673.1 | 685.9 | 703.0 | 723.1 |
+| Transformer | 602376 | 547.9 | 776.1 | 762.9 | 770.0 | 779.9 | 791.4 |
+| Latent U-Net (SD-VAE) | - | 868.4 | 1011.7 | 758.4 | 888.6 | 1100.9 | 1231.7 |
+| Latent U-Net (RAE, MAE) | - | 566.1 | 1268.2 | 1255.5 | 1258.9 | 1267.9 | 1290.3 |
+
+### 3. 比湿 (specific_humidity)
+
+| 模型 | MSE | MAE | RMSE | Step 1 | Step 2 | Step 3 | Step 4 |
+|------|-----|-----|------|--------|---------|--------|--------|
+| **Pixel U-Net** ⭐ | - | 0.000223 | **0.000451** | 0.000357 | 0.000417 | 0.000480 | 0.000529 |
+| **ConvLSTM** | 0.0 | 0.000341 | 0.000530 | 0.000294 | 0.000459 | 0.000588 | 0.000693 |
+| **CNN** | 0.0 | 0.000362 | 0.000550 | 0.000332 | 0.000487 | 0.000608 | 0.000701 |
+| Pixel U-Net (2) | - | 0.000365 | 0.000560 | 0.000327 | 0.000501 | 0.000622 | 0.000716 |
+| **Weather Transformer** | 0.0 | 0.000381 | 0.000583 | 0.000357 | 0.000523 | 0.000645 | 0.000738 |
+| Latent U-Net (SD-VAE) | - | 0.000575 | 0.000800 | 0.000564 | 0.000742 | 0.000853 | 0.000980 |
+| LSTM | 0.000001 | 0.000780 | 0.001109 | 0.001103 | 0.001107 | 0.001111 | 0.001115 |
+| Transformer | 0.000001 | 0.000786 | 0.001120 | 0.001119 | 0.001120 | 0.001120 | 0.001122 |
+| Multi-Output LR | 0.000001 | 0.000840 | 0.001196 | 0.001046 | 0.001168 | 0.001250 | 0.001305 |
+
+### 结果分析
+
+#### 最佳模型总结
+
+**2米温度**：
+1. **CNN** (RMSE=1.20 K) - 最佳传统模型 ⭐
+2. **ConvLSTM** (RMSE=1.24 K) - 次优传统模型
+3. **Pixel U-Net** (RMSE=1.25 K) - 最佳WeatherDiff模型 ⭐
+4. **Weather Transformer** (RMSE=1.35 K) - 基于ViT的Transformer
+
+**位势高度**：
+1. **CNN** (RMSE=194.8 m²/s²) - 最佳模型 ⭐
+2. **Pixel U-Net** (RMSE=201.7 m²/s²) - 次优模型
+3. **Weather Transformer** (RMSE=209.6 m²/s²)
+4. **ConvLSTM** (RMSE=219.8 m²/s²)
+
+**比湿**：
+1. **Pixel U-Net** (RMSE=0.000451) - 最佳模型 ⭐
+2. **ConvLSTM** (RMSE=0.000530)
+3. **CNN** (RMSE=0.000550)
+4. **Weather Transformer** (RMSE=0.000583)
+
+#### 关键发现
+
+1. **模型性能对比**：
+   - **CNN**在温度和位势高度预测上表现最优，说明简单CNN架构在64×32分辨率下非常有效
+   - **Pixel U-Net**在比湿预测上表现最佳，在温度和位势高度上也接近最优
+   - **ConvLSTM**在所有变量上都表现稳定，是可靠的baseline
+   - **Weather Transformer**表现中等，但在所有变量上都优于传统LSTM和Transformer
+
+2. **WeatherDiff模块表现**：
+   - **Pixel U-Net**表现优异，在三个变量上都进入前3名
+   - **Latent U-Net (SD-VAE)**在温度预测上表现较差（RMSE=8.12 K），但在位势高度和比湿上表现尚可
+   - **Latent U-Net (RAE)**在所有变量上都表现较差，可能需要进一步调优
+
+3. **预测步长分析**：
+   - 所有模型均显示误差随预测步长增加而增大（Step 1 → Step 4）
+   - 最佳模型在短期预测（6小时）表现优异：
+     - 温度：RMSE < 0.8 K
+     - 位势高度：RMSE < 90 m²/s²
+     - 比湿：RMSE < 0.0004
+   - 长期预测（24小时）误差增长明显，但仍可接受
+
+4. **模型选择建议**：
+   - **快速部署**：选择CNN，训练快速，在温度和位势高度上性能最优
+   - **平衡性能与可扩展性**：选择ConvLSTM或Pixel U-Net
+   - **比湿预测**：优先选择Pixel U-Net
+   - **大尺寸图像**：选择Latent U-Net（SD-VAE），显存友好
+   - **长距离依赖**：选择Weather Transformer
+
+**说明**：
+- Step 1-4 分别对应未来6、12、18、24小时的预测
+- 所有指标均在物理空间计算
+- 温度单位：开尔文 (K)
+- 位势高度单位：m²/s²
+- 比湿为无量纲量
+
+### 输出结果
+
+训练和预测完成后，结果保存在 `outputs/<model_name>/` 目录：
+
+```
+outputs/<model_name>/
+├── best_model.pt              # 最佳模型权重
+├── config.json               # 训练配置
+├── training_history.json     # 训练历史
+├── prediction_metrics.json  # 评估指标
+├── predictions_data/         # 预测数据（numpy格式）
+├── timeseries_*.png          # 时间序列对比图
+├── spatial_comparison_*.png  # 空间对比图
+└── rmse_vs_leadtime_*.png    # RMSE vs 预测步长
+```
+
+## 🔮 Future Work
+
+基于当前实验结果和项目进展，以下是未来可能的研究方向和改进点：
+
+### 1. S-VAE (Hyperspherical VAE) 探索
+
+- **目标**：探索使用超球面分布（von Mises-Fisher 分布）作为潜在空间分布的 S-VAE 在天气预测任务上的性能
+- **动机**：超球面分布可能更适合捕获天气数据的周期性特征（如季节循环、日循环等）
+- **研究方向**：
+  - 对比 S-VAE 与标准 VAE、RAE 在重建和预测任务上的性能
+  - 分析超球面潜在空间对天气数据表示的影响
+  - 评估不同潜在空间维度对性能的影响
+- **参考**：详细实现说明请参考 [reconstruction/SVAE_README.md](reconstruction/SVAE_README.md)
+
+### 2. Diffusion 架构深入探索
+
+- **目标**：系统评估 Diffusion 模型在天气预测任务上的性能，特别是概率预测和不确定性量化能力
+- **研究方向**：
+  - 对比 DDPM、DDIM、Latent Diffusion 等不同 Diffusion 架构
+  - 评估概率预测质量（CRPS、Spread-Skill Ratio 等指标）
+  - 探索条件 Diffusion 模型，利用历史观测数据作为条件
+  - 研究不同噪声调度策略对预测性能的影响
+  - 评估 Diffusion 模型在极端天气事件预测上的表现
+
+### 3. Codec 上限能力验证
+
+- **目标**：通过过拟合实验验证不同 codec（VAE、RAE、S-VAE）的最大重建能力上限
+- **研究方法**：
+  - 在小规模数据集上进行过拟合训练，观察重建误差的下限
+  - 分析不同 codec 的理论容量和实际表现
+  - 评估潜在空间维度对重建能力的影响
+  - 对比不同 codec 在相同条件下的最优性能
+- **意义**：确定各 codec 的性能上限，为模型选择提供理论依据
+
+### 4. 多变量关系探索
+
+- **现状**：当前主要关注单变量预测（温度、位势高度、比湿等独立预测）
+- **未来方向**：
+  - **多变量联合预测**：同时预测多个相关变量，利用变量间的物理关系
+  - **变量间依赖建模**：探索如何显式建模变量间的物理约束（如温度-位势高度关系、风场-压力场关系等）
+  - **多变量 Latent Codec**：设计能够同时编码多个变量的 codec，在潜在空间中保持变量关系
+  - **物理约束集成**：引入物理定律作为约束（如质量守恒、能量守恒等）
+  - **变量重要性分析**：研究不同变量对预测任务的贡献度
+
+### 5. 更多模型架构探索
+
+- **Graph Neural Networks (GNN)**：
+  - 将全球网格建模为图结构，利用 GNN 捕获空间关系
+  - 特别适合处理不规则网格和局部特征
+- **Neural ODE/Neural SDE**：
+  - 将天气演化建模为连续动力系统
+  - 可能更适合长期预测和物理一致性
+- **Hybrid 架构**：
+  - 结合 CNN、Transformer、Diffusion 等不同架构的优势
+  - 探索多尺度特征融合策略
+- **Attention 机制改进**：
+  - 探索 Factorized Attention、Linear Attention 等高效注意力机制
+  - 研究时空注意力在天气预测中的最佳设计
+- **Memory-Augmented Networks**：
+  - 引入外部记忆模块，存储长期天气模式
+  - 可能有助于捕获季节性和长期趋势
+
+### 6. 其他研究方向
+
+#### 6.1 更长预测时间范围
+- 当前预测 1 天（4 个时间步），扩展到 3-7 天甚至更长时间范围
+- 研究长期预测中的误差累积和模式衰减问题
+
+#### 6.2 更高分辨率支持
+- 当前主要使用 64×32 分辨率，扩展到 128×64、256×128 甚至 512×256
+- 评估高分辨率下的计算效率和性能提升
+
+#### 6.3 集成学习和模型融合
+- 探索多个模型的集成预测（Ensemble）
+- 研究不同模型预测结果的融合策略
+- 评估集成方法对预测稳定性和准确性的提升
+
+#### 6.4 物理约束和可解释性
+- 引入物理约束损失函数，确保预测结果符合物理定律
+- 开发可解释性工具，分析模型学到的天气模式
+- 可视化模型关注的关键区域和特征
+
+#### 6.5 极端天气事件专门建模
+- 针对极端天气事件（台风、暴雨、寒潮等）设计专门的模型
+- 研究不平衡数据下的训练策略
+- 评估模型在极端事件预测上的表现
+
+#### 6.6 实时预测和在线学习
+- 探索在线学习策略，使模型能够适应新的观测数据
+- 研究增量学习和持续学习在天气预测中的应用
+- 优化推理速度，支持实时预测需求
+
+#### 6.7 跨数据集泛化
+- 评估模型在不同数据集（如不同时间范围、不同区域）上的泛化能力
+- 研究域适应和迁移学习策略
+- 探索少样本学习在天气预测中的应用
 
 ## 📚 参考文献
 
@@ -464,6 +421,7 @@ pip install -r requirements_weatherdiff.txt
 - [U-Net](https://arxiv.org/abs/1505.04597) - Ronneberger et al., 2015
 - [DDPM](https://arxiv.org/abs/2006.11239) - Ho et al., 2020
 - [Stable Diffusion](https://arxiv.org/abs/2112.10752) - Rombach et al., 2022
+- [RAE](https://arxiv.org/abs/2510.11690) - Boyang Zheng et al., 2025
 
 ## 📧 联系方式
 
@@ -471,4 +429,4 @@ pip install -r requirements_weatherdiff.txt
 
 ---
 
-更多模型架构细节请参考 [MODEL.md](MODEL.md)
+更多模型架构细节请参考 [MODEL.md](MODEL.md) ([English](MODEL_EN.md))

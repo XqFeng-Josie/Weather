@@ -18,10 +18,6 @@ build/
 *.npy
 *.npz
 
-# Outputs (keep structure, ignore content)
-outputs/*/
-!outputs/.gitkeep
-
 # Models
 *.pth
 *.pkl
@@ -40,3 +36,5 @@ Thumbs.db
 /tmp/
 *.log
 *.tmp
+
+*.pt

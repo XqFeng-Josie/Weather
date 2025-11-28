@@ -1,0 +1,30 @@
+{
+  "mode": "rae_latent_unet_2m_temperature_MAEwNorm_true_true",
+  "vae_type": "rae",
+  "normalized_space": {
+    "mae": 0.13895049691200256,
+    "rmse": 0.27387914061546326,
+    "psnr": 11.248821258544922,
+    "ssim": 0.7273833129498414,
+    "mean_bias": -0.10817880928516388,
+    "std_ratio": 1.3637727499008179,
+    "correlation": 0.8136746839122702
+  },
+  "physical_space": {
+    "mae": 8.755072593688965,
+    "rmse": 17.256763458251953,
+    "psnr": -24.739187240600586,
+    "ssim": 0.7758024536396368,
+    "mean_bias": -6.8031005859375,
+    "std_ratio": 1.363779902458191,
+    "correlation": 0.813674683917149
+  },
+  "physical_space_rmse_per_leadtime": {
+    "rmse_step_1": 17.17679214477539,
+    "rmse_step_2": 17.30611228942871,
+    "rmse_step_3": 17.2265625,
+    "rmse_step_4": 17.317169189453125
+  },
+  "time_slice": "2020-01-01:2020-12-31",
+  "n_samples": 1449
+}

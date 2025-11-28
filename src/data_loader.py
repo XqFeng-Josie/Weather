@@ -30,7 +30,22 @@ class WeatherDataLoader:
         """
         self.data_path = data_path
         self.variables = variables if variables is not None else ["2m_temperature"]
-        self.levels = levels or [500, 700, 850]
+        # 保存原始的 levels 参数
+        # None 表示未指定，使用默认的 [500, 700, 850]（向后兼容）
+        # [] 空列表表示使用所有可用的 levels（用于 predict.py 中从 config 读取但未指定时）
+        # 如果是列表（非空），则使用指定的 levels
+        if levels is None:
+            # 向后兼容：None 表示使用默认值
+            self.levels = [500, 700, 850]
+            self._use_all_levels = False
+        elif isinstance(levels, list) and len(levels) == 0:
+            # 空列表表示使用所有可用的 levels
+            self.levels = None
+            self._use_all_levels = True
+        else:
+            # 指定了具体的 levels
+            self.levels = levels
+            self._use_all_levels = False
         self.ds = None
         self.spatial_shape = None
 
@@ -77,7 +92,17 @@ class WeatherDataLoader:
 
             # 如果有level维度，选择指定层
             if "level" in data.dims:
-                data = data.sel(level=self.levels)
+                if self._use_all_levels:
+                    # 如果未指定 levels，使用所有可用的 levels
+                    available_levels = data.level.values.tolist()
+                    print(f"  Using all available levels: {available_levels}")
+                    # 更新 self.levels 以便后续使用
+                    self.levels = available_levels
+                    # 不使用 sel，保留所有 levels
+                else:
+                    # 使用指定的 levels
+                    print(f"  Using specified levels: {self.levels}")
+                    data = data.sel(level=self.levels)
 
             # 确保维度顺序为标准的 (time, latitude, longitude) 或 (time, level, latitude, longitude)
             # xarray可能以 (time, longitude, latitude) 的顺序存储
@@ -108,15 +133,32 @@ class WeatherDataLoader:
 
         # 转换为numpy并标准化
         if normalize:
+            # 训练或预测时都统一将 mean/std 存成 numpy 数组，便于按 level 广播
             if norm_params is not None:
                 # 使用外部提供的归一化参数（预测时）
-                self.mean = norm_params["mean"]
-                self.std = norm_params["std"]
+                raw_mean = norm_params["mean"]
+                raw_std = norm_params["std"]
+                self.mean = {}
+                self.std = {}
                 print("Using provided normalization parameters (from training)")
-                for var in features.keys():
-                    if var in self.mean:
+                for var, data in features.items():
+                    m = raw_mean.get(var, None)
+                    s = raw_std.get(var, None)
+                    if m is None or s is None:
+                        raise ValueError(f"Missing normalization stats for variable {var}")
+
+                    # 将标量或列表/数组统一转成 numpy.ndarray，方便后续广播
+                    m_arr = np.array(m)
+                    s_arr = np.array(s)
+                    self.mean[var] = m_arr
+                    self.std[var] = s_arr
+
+                    # 日志输出：标量或按 level 的数组
+                    if m_arr.ndim == 0:
+                        print(f"  {var}: mean={float(m_arr):.4f}, std={float(s_arr):.4f}")
+                    else:
                         print(
-                            f"  {var}: mean={self.mean[var]:.4f}, std={self.std[var]:.4f}"
+                            f"  {var}: mean shape={m_arr.shape}, std shape={s_arr.shape}"
                         )
             else:
                 # 计算归一化参数（训练时）
@@ -125,16 +167,43 @@ class WeatherDataLoader:
                 print("Computing normalization parameters from data")
                 for var, data in features.items():
                     values = data.values
-                    self.mean[var] = np.nanmean(values)
-                    self.std[var] = np.nanstd(values)
-                    print(
-                        f"  {var}: mean={self.mean[var]:.4f}, std={self.std[var]:.4f}"
-                    )
 
-            # 应用归一化
+                    # 如果有 level 维度，则按 level 分别计算 mean/std
+                    if "level" in data.dims:
+                        # data 形状已保证为 (time, level, lat, lon)
+                        mean_level = np.nanmean(values, axis=(0, 2, 3))
+                        std_level = np.nanstd(values, axis=(0, 2, 3))
+                        self.mean[var] = mean_level
+                        self.std[var] = std_level
+                        print(
+                            f"  {var}: per-level mean shape={mean_level.shape}, std shape={std_level.shape}"
+                        )
+                    else:
+                        # 无 level 维度：整体一个 mean/std
+                        mean_all = np.nanmean(values)
+                        std_all = np.nanstd(values)
+                        self.mean[var] = mean_all
+                        self.std[var] = std_all
+                        print(
+                            f"  {var}: mean={mean_all:.4f}, std={std_all:.4f}"
+                        )
+
+            # 应用归一化（支持按 level 的 mean/std）
             for var, data in features.items():
                 values = data.values
-                features[var] = (values - self.mean[var]) / (self.std[var] + 1e-8)
+                m = self.mean[var]
+                s = self.std[var]
+
+                # 无 level：标量广播
+                if "level" not in data.dims:
+                    features[var] = (values - m) / (s + 1e-8)
+                else:
+                    # 有 level：期望 m/s 形状为 (n_level,)
+                    # values: (time, level, lat, lon)
+                    # 通过在前/后增加维度实现广播
+                    m_arr = np.array(m).reshape(1, -1, 1, 1)
+                    s_arr = np.array(s).reshape(1, -1, 1, 1)
+                    features[var] = (values - m_arr) / (s_arr + 1e-8)
         else:
             features = {k: v.values for k, v in features.items()}
         return features

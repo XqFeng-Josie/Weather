@@ -35,3 +35,12 @@ ipywidgets>=8.0.0
 
 # 工具库
 tqdm>=4.65.0
+
+# Stable Diffusion相关
+diffusers>=0.21.0
+transformers>=4.30.0
+accelerate>=0.20.0
+
+# 可选：用于加速
+# triton>=2.0.0  # GPU加速（Linux only）
+

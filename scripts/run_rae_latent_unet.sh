@@ -13,28 +13,28 @@ set -e
 # ============================================================================
 
 # ============ GPU设置 ============
-export CUDA_VISIBLE_DEVICES=9  # 单GPU模式，可以根据需要修改
+export CUDA_VISIBLE_DEVICES=1  # 单GPU模式，可以根据需要修改
 
 # 多GPU模式（可选）
 # USE_MULTI_GPU=false
 # GPU_IDS=""
 
 # ============ 参数配置 ============
-VARIABLE="2m_temperature"
+VARIABLES="${1:-specific_humidity}" # 2m_temperature,geopotential,specific_humidity
 TIME_SLICE="2015-01-01:2019-12-31"  # 训练数据时间范围
 PREDICTION_TIME_SLICE="2020-01-01:2020-12-31"  # 预测数据时间范围
 # PREDICTION_TIME_SLICE="2020-01-01:2020-01-31"  # 快速测试用
 
 # RAE参数（优先使用SigLIP2）
-RAE_ENCODER_CLS="Dinov2withNorm"  # 可选: Dinov2withNorm, SigLIP2wNorm, MAEwNorm
-RAE_ENCODER_CONFIG_PATH="facebook/dinov2-with-registers-base"  # 对应encoder的HuggingFace模型ID
-RAE_ENCODER_INPUT_SIZE=224  # Encoder输入图像尺寸
+RAE_ENCODER_CLS="MAEwNorm"  # 可选: Dinov2withNorm, SigLIP2wNorm, MAEwNorm
+RAE_ENCODER_CONFIG_PATH="facebook/vit-mae-base"  # 对应encoder的HuggingFace模型ID
+RAE_ENCODER_INPUT_SIZE=256  # Encoder输入图像尺寸
 RAE_DECODER_CONFIG_PATH="configs/decoder/ViTXL"  # Decoder配置路径（HuggingFace模型ID）
 RAE_DECODER_PATCH_SIZE=16  # Decoder patch大小
-RAE_PRETRAINED_DECODER_PATH="models/decoders/dinov2/wReg_base/ViTXL_n08/model.pt"  # 可选，预训练decoder路径
-RAE_NORMALIZATION_STAT_PATH="models/stats/dinov2/wReg_base/imagenet1k/stat.pt"  # 可选，归一化统计量路径
+RAE_PRETRAINED_DECODER_PATH="models/decoders/mae/base_p16/ViTXL_n08/model.pt"  # 可选，预训练decoder路径
+RAE_NORMALIZATION_STAT_PATH="models/stats/mae/base_p16/ImageNet1k/stat.pt"  # 可选，归一化统计量路径
 FREEZE_ENCODER=true   # 冻结encoder（默认true，encoder固定）
-FREEZE_DECODER=false  # decoder可微调（默认false，decoder参与训练）
+FREEZE_DECODER=true  # decoder可微调（默认false，decoder参与训练）
 
 # 模型参数
 INPUT_LENGTH=12
@@ -61,9 +61,19 @@ NORMALIZATION="minmax"
 # 预处理时会自动使用正确的target_size
 DATA_PATH="gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr"
 
+# 如果变量有level维度，设置levels（例如：geopotential）
+# 如果不指定，将使用所有可用的levels
+if [ "$VARIABLES" == "geopotential" ]; then
+    LEVELS="500"
+elif [ "$VARIABLES" == "specific_humidity" ]; then
+    LEVELS="700"
+else
+    LEVELS=""
+fi
+
 # 输出目录（target_size会在训练时自动确定）
 PREPROCESSED_DIR="data/preprocessed/rae_pre_${TIME_SLICE//:/_}_${RAE_ENCODER_CLS}"
-OUTPUT_DIR="outputs/rae_latent_unet_${VARIABLE}_${RAE_ENCODER_CLS}_${FREEZE_ENCODER}_${FREEZE_DECODER}"
+OUTPUT_DIR="outputs/rae_latent_unet_${VARIABLES}_${RAE_ENCODER_CLS}_${FREEZE_ENCODER}_${FREEZE_DECODER}"
 
 echo "========================================================================"
 echo "完整RAE潜空间U-Net训练流程"
@@ -97,7 +107,7 @@ echo ""
 # 先确定target_size（RAE的target_size由decoder输出尺寸决定）
 # 这里使用encoder_input_size作为初始估计，实际值会在训练时验证
 ESTIMATED_TARGET_SIZE="256,256"
-PREPROCESSED_DIR_WITH_SIZE="data/preprocessed/rae_pre_${TIME_SLICE//:/_}_${ESTIMATED_TARGET_SIZE//,/x}"
+PREPROCESSED_DIR_WITH_SIZE="data/preprocessed/rae_pre_${VARIABLES}_${TIME_SLICE//:/_}_${ESTIMATED_TARGET_SIZE//,/x}"
 
 if [ ! -d "$PREPROCESSED_DIR_WITH_SIZE" ]; then
     echo "========================================================================"
@@ -110,15 +120,24 @@ if [ ! -d "$PREPROCESSED_DIR_WITH_SIZE" ]; then
     echo "预计输出大小: ~10-20 GB"
     echo ""
     
-    python preprocess_data_for_latent_unet.py \
+    # 构建预处理命令
+    PREPROCESS_CMD="python preprocess_data_for_latent_unet.py \
         --data-path $DATA_PATH \
-        --variable $VARIABLE \
+        --variable $VARIABLES \
         --time-slice $TIME_SLICE \
         --target-size $ESTIMATED_TARGET_SIZE \
         --n-channels 3 \
         --normalization $NORMALIZATION \
         --output-dir $PREPROCESSED_DIR_WITH_SIZE \
-        --chunk-size 100
+        --chunk-size 100"
+    
+    # 如果指定了LEVELS，添加到命令中
+    if [ -n "$LEVELS" ]; then
+        PREPROCESS_CMD="$PREPROCESS_CMD --levels $LEVELS"
+    fi
+    
+    # 执行预处理命令
+    eval $PREPROCESS_CMD
     
     echo ""
     echo "✓ 数据预处理完成！"
@@ -134,7 +153,7 @@ else
     if [ -f "$PREPROCESSED_DIR/metadata.json" ]; then
         echo ""
         echo "数据信息:"
-        cat $PREPROCESSED_DIR/metadata.json | python -m json.tool | grep -E "variable|n_timesteps|shape|target_size"
+        cat $PREPROCESSED_DIR/metadata.json | python -m json.tool | grep -E "VARIABLES|n_timesteps|shape|target_size"
     fi
 fi
 
@@ -147,7 +166,7 @@ echo ""
 # 构建训练命令
 TRAIN_CMD="python train_rae.py \
     --preprocessed-data-dir $PREPROCESSED_DIR \
-    --variable $VARIABLE \
+    --variable $VARIABLES \
     --time-slice $TIME_SLICE \
     --rae-encoder-cls $RAE_ENCODER_CLS \
     --rae-encoder-config-path $RAE_ENCODER_CONFIG_PATH \
@@ -199,6 +218,10 @@ if [ -n "$RAE_NORMALIZATION_STAT_PATH" ]; then
     TRAIN_CMD="$TRAIN_CMD --rae-normalization-stat-path $RAE_NORMALIZATION_STAT_PATH"
 fi
 
+if [ -n "$LEVELS" ]; then
+    TRAIN_CMD="$TRAIN_CMD --levels $LEVELS"
+fi
+
 # 执行训练命令
 eval $TRAIN_CMD
 
@@ -214,12 +237,29 @@ echo "Step 3: 预测和评估"
 echo "========================================================================"
 echo ""
 
-python predict_rae.py \
+# 构建预测命令
+PREDICT_CMD="python predict_rae.py \
     --model-dir $OUTPUT_DIR \
     --data-path $DATA_PATH \
     --time-slice $PREDICTION_TIME_SLICE \
     --batch-size 32 \
-    --vae-batch-size $VAE_BATCH_SIZE
+    --vae-batch-size $VAE_BATCH_SIZE"
+
+# 添加RAE参数（如果提供了）
+if [ -n "$RAE_PRETRAINED_DECODER_PATH" ]; then
+    PREDICT_CMD="$PREDICT_CMD --rae-pretrained-decoder-path $RAE_PRETRAINED_DECODER_PATH"
+fi
+
+if [ -n "$RAE_NORMALIZATION_STAT_PATH" ]; then
+    PREDICT_CMD="$PREDICT_CMD --rae-normalization-stat-path $RAE_NORMALIZATION_STAT_PATH"
+fi
+
+if [ -n "$LEVELS" ]; then
+    PREDICT_CMD="$PREDICT_CMD --levels $LEVELS"
+fi
+
+# 执行预测命令
+eval $PREDICT_CMD
 
 echo ""
 echo "✓ 预测完成!"

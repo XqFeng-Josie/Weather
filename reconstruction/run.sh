@@ -8,6 +8,9 @@ echo "=========================================="
 echo "VAE vs RAE 重建对比工作流程"
 echo "=========================================="
 
+export CUDA_VISIBLE_DEVICES=5
+echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
+
 # 获取当前脚本所在目录的上一级目录
 PARENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -16,7 +19,7 @@ PARENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 配置
 DATA_PATH="gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr"
 VARIABLE="2m_temperature"
-TIME_SLICE="2020-01-01:2020-01-31"
+TIME_SLICE="2019-01-01:2019-12-31"
 N_SAMPLES=100
 TARGET_SIZE="256 256"
 OUTPUT_DIR="outputs"
@@ -31,8 +34,8 @@ if [ ! -d "weather_images" ]; then
         --variable "$VARIABLE" \
         --time-slice "$TIME_SLICE" \
         --target-size $TARGET_SIZE \
-        --output-dir weather_images \
-        --n-samples $N_SAMPLES
+        --output-dir weather_images
+        # --n-samples $N_SAMPLES
     echo "✓ 天气图像准备完成"
 else
     echo "✓ 天气图像已存在，跳过"
@@ -44,8 +47,7 @@ echo "步骤 2: 运行 VAE 重建测试..."
 echo "----------------------------------------"
 cd ..  # 回到 Weather 项目根目录
 python $PARENT_DIR/reconstruction/test_vae_reconstruction.py \
-    --data-path $PARENT_DIR/reconstruction/weather_images \
-    --n-test-samples $N_SAMPLES \
+    --data-path $PARENT_DIR/reconstruction/weather_images/weather/ \
     --output-dir $PARENT_DIR/reconstruction/$OUTPUT_DIR/vae_reconstruction \
     --save-separate
 echo "✓ VAE 重建测试完成"
@@ -75,13 +77,14 @@ VAE_RECON_DIR="$PARENT_DIR/reconstruction/$OUTPUT_DIR/vae_reconstruction/recon_s
 RAE_SigLIP2_RECON_DIR="$PARENT_DIR/reconstruction/$OUTPUT_DIR/rae_reconstruction/recon_samples_SigLIP2/RAE-pretrained-bs4-fp32"
 RAE_DINOv2_B_RECON_DIR="$PARENT_DIR/reconstruction/$OUTPUT_DIR/rae_reconstruction/recon_samples_DINOv2-B/RAE-pretrained-bs4-fp32"
 RAE_MAE_RECON_DIR="$PARENT_DIR/reconstruction/$OUTPUT_DIR/rae_reconstruction/recon_samples_MAE/RAE-pretrained-bs4-fp32"
-
-if [ -d "$VAE_RECON_DIR" ] && [ -d "$RAE_SigLIP2_RECON_DIR" ] && [ -d "$RAE_DINOv2_B_RECON_DIR" ] && [ -d "$RAE_MAE_RECON_DIR" ]; then
+DINOv2_B_decXL_RECON_DIR="$PARENT_DIR/reconstruction/$OUTPUT_DIR/rae_reconstruction/recon_samples_DINOv2-B_decXL/RAE-best-bs4-fp32"
+MAE_decXL_RECON_DIR="$PARENT_DIR/reconstruction/$OUTPUT_DIR/rae_reconstruction/recon_samples_MAE_decXL/RAE-best-bs4-fp32"
+if [ -d "$VAE_RECON_DIR" ] && [ -d "$RAE_SigLIP2_RECON_DIR" ] && [ -d "$RAE_DINOv2_B_RECON_DIR" ] && [ -d "$RAE_MAE_RECON_DIR" ] && [ -d "$DINOv2_B_decXL_RECON_DIR" ] && [ -d "$MAE_decXL_RECON_DIR" ]; then
     # 对比 VAE 和 RAE
     python $PARENT_DIR/reconstruction/compare_reconstructions.py \
-        --original-dir $PARENT_DIR/reconstruction/weather_images \
-        --reconstructed-dirs "$VAE_RECON_DIR" "$RAE_SigLIP2_RECON_DIR" "$RAE_DINOv2_B_RECON_DIR"  "$RAE_MAE_RECON_DIR" \
-        --labels VAE RAE-SigLIP2 RAE-DINOv2-B RAE-MAE \
+        --original-dir $PARENT_DIR/reconstruction/weather_images/weather/ \
+        --reconstructed-dirs "$VAE_RECON_DIR" "$RAE_SigLIP2_RECON_DIR" "$RAE_DINOv2_B_RECON_DIR"  "$RAE_MAE_RECON_DIR" "$DINOv2_B_decXL_RECON_DIR" "$MAE_decXL_RECON_DIR" \
+        --labels VAE RAE-SigLIP2 RAE-DINOv2-B RAE-MAE RAE-DINOv2-B_decXL RAE-MAE_decXL \
         --output "$PARENT_DIR/reconstruction/$OUTPUT_DIR/comparison_vae_vs_rae.png" \
         --metrics-output "$PARENT_DIR/reconstruction/$OUTPUT_DIR/metrics_vae_vs_rae.json" \
         --table-output "$PARENT_DIR/reconstruction/$OUTPUT_DIR/metrics_table.png" \
@@ -91,7 +94,7 @@ if [ -d "$VAE_RECON_DIR" ] && [ -d "$RAE_SigLIP2_RECON_DIR" ] && [ -d "$RAE_DINO
 elif [ -d "$VAE_RECON_DIR" ]; then
     # 只对比 VAE
     python $PARENT_DIR/reconstruction/compare_reconstructions.py \
-        --original-dir $PARENT_DIR/reconstruction/weather_images \
+        --original-dir $PARENT_DIR/reconstruction/weather_images/weather/ \
         --reconstructed-dir "$VAE_RECON_DIR" \
         --output "$PARENT_DIR/reconstruction/$OUTPUT_DIR/comparison_vae.png" \
         --metrics-output "$PARENT_DIR/reconstruction/$OUTPUT_DIR/metrics_vae.json" \

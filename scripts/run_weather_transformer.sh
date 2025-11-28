@@ -12,7 +12,7 @@ echo "=================================="
 
 # 配置
 DATA_PATH="gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr"
-VARIABLES="2m_temperature"
+VARIABLES="${1:-specific_humidity}" # 2m_temperature,geopotential,specific_humidity
 TIME_SLICE="2015-01-01:2019-12-31"
 PREDICTION_TIME_SLICE="2020-01-01:2020-12-31"
 OUTPUT_DIR="outputs/weather_transformer_$VARIABLES"
@@ -37,6 +37,16 @@ LR=1e-4
 WEIGHT_DECAY=1e-5
 EARLY_STOP=15
 
+
+if [ "$VARIABLES" == "geopotential" ]; then
+    LEVELS="500"
+elif [ "$VARIABLES" == "specific_humidity" ]; then
+    LEVELS="700"
+else
+    LEVELS=""
+fi
+
+
 echo ""
 echo "配置:"
 echo "  数据: $DATA_PATH"
@@ -48,24 +58,30 @@ echo ""
 
 # 训练
 echo "开始训练..."
-# python train_weather_transformer.py \
-#     --data-path "$DATA_PATH" \
-#     --variables $VARIABLES \
-#     --time-slice "$TIME_SLICE" \
-#     --input-length $INPUT_LENGTH \
-#     --output-length $OUTPUT_LENGTH \
-#     --img-size $IMG_SIZE \
-#     --patch-size $PATCH_SIZE \
-#     --d-model $D_MODEL \
-#     --n-heads $N_HEADS \
-#     --n-layers $N_LAYERS \
-#     --dropout $DROPOUT \
-#     --epochs $EPOCHS \
-#     --batch-size $BATCH_SIZE \
-#     --lr $LR \
-#     --weight-decay $WEIGHT_DECAY \
-#     --early-stop $EARLY_STOP \
-#     --output-dir "$OUTPUT_DIR"
+train_cmd="python train_weather_transformer.py \
+    --data-path $DATA_PATH \
+    --variables $VARIABLES \
+    --time-slice $TIME_SLICE \
+    --input-length $INPUT_LENGTH \
+    --output-length $OUTPUT_LENGTH \
+    --img-size $IMG_SIZE \
+    --patch-size $PATCH_SIZE \
+    --d-model $D_MODEL \
+    --n-heads $N_HEADS \
+    --n-layers $N_LAYERS \
+    --dropout $DROPOUT \
+    --epochs $EPOCHS \
+    --batch-size $BATCH_SIZE \
+    --lr $LR \
+    --weight-decay $WEIGHT_DECAY \
+    --early-stop $EARLY_STOP \
+    --output-dir $OUTPUT_DIR"
+if [ -n "$LEVELS" ]; then
+    train_cmd="$train_cmd --levels $LEVELS"
+fi
+    
+eval $train_cmd
+
 
 echo ""
 echo "训练完成！"
@@ -73,13 +89,20 @@ echo "训练完成！"
 # 预测和可视化
 echo ""
 echo "开始预测和可视化..."
-python predict.py \
-    --model-path "$OUTPUT_DIR/best_model.pth" \
-    --data-path "$DATA_PATH" \
-    --time-slice "$PREDICTION_TIME_SLICE" \
+predict_cmd="python predict.py \
+    --model-path $OUTPUT_DIR/best_model.pth \
+    --data-path $DATA_PATH \
+    --time-slice $PREDICTION_TIME_SLICE \
     --visualize \
     --save-predictions \
-    --output $OUTPUT_DIR/predictions.nc
+    --output $OUTPUT_DIR/predictions.nc"
+
+if [ -n "$LEVELS" ]; then
+    predict_cmd="$predict_cmd --levels $LEVELS"
+fi
+    
+eval $predict_cmd
+
 echo ""
 echo "=================================="
 echo "完成！"

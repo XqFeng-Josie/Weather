@@ -20,7 +20,8 @@ set -e
 # export CUDA_VISIBLE_DEVICES=6
 
 # ============ 参数配置 ============
-VARIABLE="2m_temperature"
+VARIABLES="${1:-specific_humidity}" # 2m_temperature,geopotential,specific_humidity
+
 TIME_SLICE="2000-01-01:2019-12-31"          # 训练数据
 PREDICTION_TIME_SLICE="2020-01-01:2020-12-31"  # 预测数据
 
@@ -63,7 +64,7 @@ OUTPUT_DIR="outputs/diffusion_${TIME_SLICE//:/_}"
 echo "========================================================================"
 echo "扩散模型训练和预测"
 echo "========================================================================"
-echo "变量: $VARIABLE"
+echo "变量: $VARIABLES"
 echo "训练时间: $TIME_SLICE"
 echo "预测时间: $PREDICTION_TIME_SLICE"
 echo "VAE模型: $VAE_MODEL_ID"
@@ -87,7 +88,7 @@ if [ ! -d "$PREPROCESSED_DIR" ]; then
     
     python preprocess_data_for_latent_unet.py \
         --data-path $DATA_PATH \
-        --variable $VARIABLE \
+        --VARIABLES $VARIABLES \
         --time-slice $TIME_SLICE \
         --target-size $TARGET_SIZE \
         --n-channels 3 \
@@ -107,7 +108,7 @@ else
     if [ -f "$PREPROCESSED_DIR/metadata.json" ]; then
         echo ""
         echo "数据信息:"
-        cat $PREPROCESSED_DIR/metadata.json | python -m json.tool | grep -E "variable|n_timesteps|shape|target_size"
+        cat $PREPROCESSED_DIR/metadata.json | python -m json.tool | grep -E "VARIABLES|n_timesteps|shape|target_size"
     fi
 fi
 
@@ -123,7 +124,7 @@ echo "========================================================================"
 # 使用预处理数据训练（推荐）
 python train_diffusion.py \
     --preprocessed-data-dir $PREPROCESSED_DIR \
-    --variable $VARIABLE \
+    --VARIABLES $VARIABLES \
     --time-slice $TIME_SLICE \
     --vae-model-id $VAE_MODEL_ID \
     --input-length $INPUT_LENGTH \

@@ -95,6 +95,33 @@ for var in variables:
 - ✅ 单变量简单预测
 - ❌ 不适合实际应用
 
+#### 扩展：Multi-Output Linear Regression
+
+`src/models/linear_regression.py` 中还实现了 `MultiOutputLinearRegression`：
+
+**模型结构**:
+```python
+# 每个变量独立训练一个Ridge模型
+for var in variables:
+    X_flat = (n_samples, input_length * total_features)  # 所有变量的特征
+    y_var = (n_samples, output_length * grid_points_per_var)  # 仅该变量的网格点
+    model[var] = Ridge(alpha=10.0).fit(X_scaled, y_scaled)
+```
+
+**特点**:
+- **每个变量一个模型**: 例如2m_temperature一个模型，geopotential一个模型
+- **共享输入特征**: 所有变量使用相同的输入特征（包含所有变量的历史数据）
+- **独立预测**: 每个模型只预测对应变量的所有网格点
+- **正则化**: 使用更大的alpha（10.0 vs 1.0）防止过拟合
+
+**与标准LR的区别**:
+- 标准LR: 所有变量共享一个模型，预测所有变量的所有网格点
+- 多输出LR: 每个变量独立模型，但输入包含所有变量的信息
+
+**适用场景**:
+- ✅ 多变量预测（每个变量有独立的物理特性）
+- ✅ 需要变量特定正则化的场景
+
 ---
 
 ### LSTM
@@ -146,6 +173,100 @@ LSTM层 (hidden_size=128, num_layers=2)
 - ✅ 特征已提取/降维的情况
 - ❌ 不适合需要空间信息的网格预测
 
+#### 扩展：其他LSTM变体
+
+`src/models/lstm.py` 中还实现了其他LSTM变体：
+
+1. **BidirectionalLSTM**:
+   - 双向LSTM，可以同时利用过去和未来的信息
+   - 输出维度为 `2 * hidden_size`
+   - 适合编码器场景，但预测任务中无法使用未来信息
+
+2. **LSTMSeq2Seq**:
+   - 编码器-解码器架构
+   - 编码器处理输入序列，解码器自回归生成输出
+   - 更适合序列到序列的预测任务
+
+---
+
+### Transformer (序列建模)
+
+#### 模型结构
+
+标准Transformer模型（`TransformerModel`）：
+
+```
+输入: (batch, 12, features)
+  ↓
+输入投影: Linear(features, d_model=128)
+  ↓
+位置编码: PositionalEncoding (正弦编码)
+  ↓
+Transformer编码器 (3层):
+  MultiheadAttention (4 heads) → LayerNorm → FFN → LayerNorm
+  ↓
+取最后时间步: (batch, d_model)
+  ↓
+输出投影:
+  LayerNorm → Dropout → Linear(d_model, d_model//2) → ReLU → 
+  Dropout → Linear(d_model//2, features*4)
+  ↓
+重塑: (batch, 4, features)
+```
+
+#### 输入输出
+
+- **输入**: `(batch, input_length=12, input_size)`
+  - `input_size`: 展平后的特征数（`channels * H * W`）
+- **输出**: `(batch, output_length=4, input_size)`
+- **关键参数**:
+  - `d_model`: Transformer嵌入维度（默认128，已优化减小）
+  - `nhead`: 注意力头数（默认4，已优化减小）
+  - `num_layers`: Transformer层数（默认3，已优化减小）
+  - `dropout`: Dropout率（默认0.2，已优化增加）
+
+#### 工作原理
+
+1. **注意力机制**: 使用多头自注意力捕获序列内的依赖关系
+2. **位置编码**: 正弦位置编码提供时间顺序信息
+3. **序列建模**: Transformer编码器处理整个输入序列
+4. **空间信息丢失**: 输入时已将空间维度展平，无法利用空间结构
+5. **优化设计**: 针对单变量预测场景，减小了参数量以防止过拟合
+
+#### 与任务的关系
+
+- **优势**:
+  - 有效建模长距离时间依赖（注意力机制）
+  - 并行计算，训练效率高
+  - 参数量已优化，适合单变量预测
+- **局限**:
+  - ❌ **丢失空间结构**（展平操作）
+  - ❌ 无法捕获空间相关性
+  - ❌ 计算复杂度O(n²)，序列长度受限
+
+#### 适用场景
+
+- ✅ 单点时间序列预测
+- ✅ 特征已提取/降维的情况
+- ✅ 需要捕获长距离时间依赖的任务
+- ❌ 不适合需要空间信息的网格预测
+
+#### 扩展：其他Transformer变体
+
+`src/models/transformer.py` 中还实现了其他Transformer变体：
+
+1. **TransformerSeq2Seq**:
+   - 编码器-解码器架构
+   - 编码器处理输入序列，解码器使用可学习查询token生成输出
+   - 更适合序列到序列的预测任务
+   - 参数：`d_model=256, nhead=8, num_encoder_layers=4, num_decoder_layers=4`
+
+2. **SpatialTransformer**:
+   - 将每个空间位置当作一个token
+   - 使用Transformer建模空间位置之间的关系
+   - 注意：对于大的空间网格（如32×64=2048个token）计算量很大
+   - 当前实现中可能未使用
+
 ---
 
 ### CNN
@@ -158,15 +279,15 @@ LSTM层 (hidden_size=128, num_layers=2)
 展平时间维度: (batch, 12*channels, H, W)
   ↓
 编码器 (Encoder):
-  Conv2d(12*channels, 64) → BN → ReLU
-  Conv2d(64, 128) → BN → ReLU
-  Conv2d(128, 128, stride=2) → BN → ReLU  # 下采样
-  Conv2d(128, 256) → BN → ReLU
+  Conv2d(12*channels, 64, k=3, p=1) → BN → ReLU
+  Conv2d(64, 128, k=3, p=1) → BN → ReLU
+  Conv2d(128, 128, k=3, s=2, p=1) → BN → ReLU  # 下采样: 64×32 → 32×16
+  Conv2d(128, 256, k=3, p=1) → BN → ReLU
   ↓
 解码器 (Decoder):
-  ConvTranspose2d(256, 128, stride=2) → BN → ReLU  # 上采样
-  Conv2d(128, 64) → BN → ReLU
-  Conv2d(64, 4*channels)  # 输出
+  ConvTranspose2d(256, 128, k=4, s=2, p=1) → BN → ReLU  # 上采样: 32×16 → 64×32
+  Conv2d(128, 64, k=3, p=1) → BN → ReLU
+  Conv2d(64, 4*channels, k=3, p=1)  # 输出
   ↓
 重塑: (batch, 4, channels, H, W)
 ```
@@ -201,6 +322,15 @@ LSTM层 (hidden_size=128, num_layers=2)
 - ✅ 空间模式预测（如静态天气图）
 - ✅ 计算资源有限的情况
 - ❌ 不适合需要时间依赖的预测任务
+
+#### 扩展：DeepCNN
+
+`src/models/cnn.py` 中还实现了 `DeepCNN`：
+
+- **残差连接**: 使用ResidualBlock构建更深的网络
+- **结构**: 输入投影 → 多个残差块 → 输出投影
+- **优势**: 更深的网络可以学习更复杂的空间模式
+- **参数**: `n_residual_blocks` 控制残差块数量（默认3）
 
 ---
 
@@ -290,9 +420,30 @@ hidden_next = o * tanh(cell_next)  # 更新隐藏状态
 
 `src/models/convlstm.py` 中还实现了 `ConvLSTMSeq2Seq`：
 
-- 使用 ConvLSTM 编码器提取历史潜状态，解码器以最后一帧初始化后自回归地产生未来帧。
-- 输出通过 1×1 卷积恢复到原始变量数，可选择用预测作为下一步输入，实现教师强制或自由运行。
-- 适合需要更长输出序列或希望在解码阶段注入外部条件（例如外推边界）的场景。
+**模型结构**:
+```
+输入: (batch, 12, channels, H, W)
+  ↓
+编码器 (ConvLSTM多层):
+  处理输入序列，提取历史时空特征
+  ↓
+取最后一层的最后状态: (h, c)
+  ↓
+解码器 (自回归):
+  for t in range(output_length):
+    decoder_input = 最后一帧 (或上一步预测)
+    h, c = ConvLSTMCell(decoder_input, (h, c))
+    out = Conv2d(h) → (batch, channels, H, W)
+    使用out作为下一步的decoder_input
+  ↓
+输出: (batch, 4, channels, H, W)
+```
+
+**特点**:
+- 编码器-解码器架构，更适合序列到序列任务
+- 自回归生成：使用预测作为下一步输入（自由运行模式）
+- 可选教师强制：训练时可以使用真实值作为下一步输入
+- 适合需要更长输出序列或希望在解码阶段注入外部条件的场景
 
 ---
 
@@ -614,16 +765,28 @@ U-Net:
 #### U-Net详细结构
 
 ```python
+# 卷积块（使用GroupNorm和SiLU激活）
+ConvBlock:
+  Conv2d → GroupNorm(8) → SiLU → Conv2d → GroupNorm(8) → SiLU
+
 # 下采样块
 DownBlock:
   ConvBlock(in_ch, out_ch) → MaxPool2d(2)
-  保存skip connection
+  保存skip connection（用于上采样时拼接）
 
 # 上采样块
 UpBlock:
   ConvTranspose2d(in_ch, in_ch//2, stride=2)
-  Concat([up, skip])
+  Concat([up, skip])  # 拼接skip connection
   ConvBlock(in_ch//2+skip_ch, out_ch)
+
+# 整体结构
+输入: (B, T_in*C, H, W)
+  → 输入卷积: (B, base_channels, H, W)
+  → 下采样路径（depth层）: 逐步下采样，保存skip
+  → 瓶颈层: ConvBlock
+  → 上采样路径（depth层）: 逐步上采样，使用skip
+  → 输出卷积: (B, T_out*C, H, W)
 ```
 
 #### 输入输出
@@ -669,21 +832,22 @@ UpBlock:
 ```
 输入图像: (batch, 12, channels, H, W)
   ↓
-SD VAE编码 (批量):
+SD VAE编码 (分批处理，控制显存):
   (batch*12, channels, H, W) → (batch*12, 4, H//8, W//8)
   ↓
 重塑: (batch, 12, 4, H//8, W//8)
   ↓
 展平时间维度: (batch, 12*4, H//8, W//8)
   ↓
-U-Net (在潜空间):
-  下采样 → 瓶颈 → 上采样
+Latent U-Net (在潜空间):
+  输入卷积 → 下采样路径 → 瓶颈 → 上采样路径 → 输出卷积
+  (使用与Pixel U-Net相同的U-Net结构，但输入输出通道不同)
   ↓
 输出: (batch, 4*4, H//8, W//8)
   ↓
 重塑: (batch, 4, 4, H//8, W//8)
   ↓
-SD VAE解码 (批量):
+SD VAE解码 (分批处理):
   (batch*4, 4, H//8, W//8) → (batch*4, channels, H, W)
   ↓
 重塑: (batch, 4, channels, H, W)
@@ -693,24 +857,29 @@ SD VAE解码 (批量):
 ```
 输入图像: (batch, 12, channels, H, W)
   ↓
-RAE编码 (批量):
+RAE编码 (分批处理):
   (batch*12, channels, H, W) 
-    → Resize到encoder_input_size
+    → Resize到encoder_input_size (如256×256)
+    → Vision Transformer Encoder (DINOv2/SigLIP2/MAE)
     → (batch*12, latent_dim, H_latent, W_latent)
+    # latent_dim取决于encoder（如768 for DINOv2-base）
+    # H_latent, W_latent = encoder_input_size // patch_size
   ↓
 重塑: (batch, 12, latent_dim, H_latent, W_latent)
   ↓
 展平时间维度: (batch, 12*latent_dim, H_latent, W_latent)
   ↓
-U-Net (在潜空间):
-  下采样 → 瓶颈 → 上采样
+Latent U-Net (在潜空间):
+  输入卷积 → 下采样路径 → 瓶颈 → 上采样路径 → 输出卷积
+  (与SD VAE版本结构相同，但latent_channels=latent_dim)
   ↓
 输出: (batch, 4*latent_dim, H_latent, W_latent)
   ↓
 重塑: (batch, 4, latent_dim, H_latent, W_latent)
   ↓
-RAE解码 (批量，decoder可微调):
+RAE解码 (分批处理，decoder可微调):
   (batch*4, latent_dim, H_latent, W_latent)
+    → Vision Transformer Decoder (MAE-based，可训练)
     → (batch*4, channels, H, W)
   ↓
 重塑: (batch, 4, channels, H, W)
@@ -916,6 +1085,7 @@ x_{t-1} = sqrt(alpha_bar_{t-1}) * predicted_x_0 + sqrt(1-alpha_bar_{t-1}) * pred
 |------|---------|---------|---------|---------|---------|--------|---------|
 | **Linear Regression** | ✗ | ⚡⚡⚡ | ⚡⚡⚡ | ✗ | 低 | 很少 | 快速基线 |
 | **LSTM** | 时序 | ⚡⚡ | ⚡⚡ | ✗ | 中 | 中 | 单点预测 |
+| **Transformer** | 时序 | ⚡⚡ | ⚡⚡ | ✗ | 中 | 中 | 单点预测（长距离依赖） |
 | **CNN** | 空间 | ⚡⚡ | ⚡⚡⚡ | ✗ | 中 | 中 | 空间模式 |
 | **ConvLSTM** | 时空 | ⚡ | ⚡⚡ | ✗ | 中 | 中 | **通用预测** ⭐ |
 | **Weather Transformer** | 时空 | ⚡ | ⚡ | ✗ | 中 | 少 | 长距离依赖 |
@@ -954,7 +1124,8 @@ x_{t-1} = sqrt(alpha_bar_{t-1}) * predicted_x_0 + sqrt(1-alpha_bar_{t-1}) * pred
 
 1. **时空建模需求**:
    - ✅ ConvLSTM, Weather Transformer, Latent U-Net, Diffusion
-   - ❌ Linear Regression, LSTM (无空间), CNN (无时序)
+   - ⚠️ Transformer, LSTM (仅时序，无空间)
+   - ❌ Linear Regression, CNN (无时序)
 
 2. **不确定性需求**:
    - ✅ Diffusion Model

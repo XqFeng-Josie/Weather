@@ -236,6 +236,14 @@ def main():
         default=4,
         help="VAE编码/解码批次大小（控制显存占用）",
     )
+    parser.add_argument(
+        "--levels",
+        type=int,
+        nargs="+",
+        default=None,
+        help="选择特定的气压层进行评估/可视化 (e.g. --levels 500 or --levels 500 700 850). "
+        "Levels必须与训练时配置中的levels一致。如果不指定，将使用所有levels。",
+    )
 
     # 其他参数
     parser.add_argument(
@@ -276,6 +284,49 @@ def main():
     print(f"  输出序列长度: {config['output_length']}")
     print(f"  归一化方法: {config['normalization']}")
     print(f"  VAE模型: {config['vae_model_id']}")
+
+    # 从config读取训练时使用的 levels（如果有的话）
+    available_levels = config.get("levels", None)
+    if available_levels is not None:
+        print(f"  训练时使用的levels: {available_levels}")
+    else:
+        print(f"  训练时使用的levels: 所有可用的levels（默认）")
+
+    # 处理命令行指定的 --levels 参数
+    selected_levels = args.levels
+    channel_indices = None  # 用于后续选择指定的 channels
+    if selected_levels is not None:
+        if available_levels is None:
+            raise ValueError(
+                "No 'levels' found in config. Cannot select specific levels. "
+                "Please use all levels (omit --levels argument)."
+            )
+
+        # 确保 available_levels 是列表
+        if not isinstance(available_levels, list):
+            available_levels = [available_levels]
+
+        # 检查用户指定的 levels 是否在可用的 levels 中
+        invalid_levels = [l for l in selected_levels if l not in available_levels]
+        if invalid_levels:
+            raise ValueError(
+                f"Invalid levels: {invalid_levels}. "
+                f"Available levels from config: {available_levels}"
+            )
+
+        # 将 level 值转换为 channel 索引
+        # channel 的顺序与 available_levels 的顺序一致
+        channel_indices = []
+        for level in selected_levels:
+            if level in available_levels:
+                channel_indices.append(available_levels.index(level))
+
+        print(
+            f"  选择levels {selected_levels} 进行评估/可视化 "
+            f"(channel indices: {channel_indices})"
+        )
+    else:
+        print(f"  使用所有levels进行评估/可视化")
 
     # 加载归一化参数
     normalizer_path = model_dir / "normalizer_stats.pkl"
@@ -320,7 +371,29 @@ def main():
     ds = ds.sel(time=slice(start, end))
 
     # 获取变量数据
-    data = ds[config["variable"]].values  # (Time, H, W)
+    variable_da = ds[config["variable"]]
+
+    # 如果有level维度，根据config中的levels进行选择（用于数据加载）
+    # 注意：数据加载时需要使用训练时使用的所有levels，而不是命令行指定的selected_levels
+    # selected_levels只用于后续的评估和可视化
+    if "level" in variable_da.dims:
+        if available_levels is not None:
+            # 使用训练时指定的 levels（所有levels）
+            print(f"  变量有level维度，使用训练时的levels: {available_levels}")
+            variable_da = variable_da.sel(level=available_levels)
+            # 确保顺序与训练时一致
+            actual_levels = variable_da.level.values.tolist()
+            print(f"  实际加载的levels: {actual_levels}")
+        else:
+            # 使用所有可用的 levels
+            available_levels_from_data = variable_da.level.values.tolist()
+            print(
+                f"  变量有level维度，使用所有可用的levels: {available_levels_from_data}"
+            )
+            available_levels = available_levels_from_data
+            actual_levels = available_levels_from_data
+
+    data = variable_da.values  # (Time, H, W) 或 (Time, Level, H, W)
     print(f"原始数据 shape: {data.shape}")
     print(f"数据范围: [{data.min():.2f}, {data.max():.2f}]")
     print(f"时间范围: {start} 至 {end}")
@@ -344,7 +417,33 @@ def main():
 
     # 归一化（使用训练时保存的参数）
     normalizer = Normalizer(method=config["normalization"])
-    normalizer.load_stats(normalizer_data["stats"])
+
+    # 加载归一化统计量（支持按level归一化）
+    if (
+        "normalize_per_level" in normalizer_data
+        and normalizer_data["normalize_per_level"]
+    ):
+        # 按level归一化：传递完整的normalizer_data
+        normalizer.load_stats(normalizer_data)
+        # 从config或metadata中获取n_channels_per_level
+        if "n_channels" in config:
+            normalizer.n_channels_per_level = config["n_channels"]
+        else:
+            # 尝试从数据形状推断
+            _, C, _, _ = data.shape
+            if "levels" in normalizer_data and normalizer_data["levels"]:
+                n_levels = len(normalizer_data["levels"])
+                if C % n_levels == 0:
+                    normalizer.n_channels_per_level = C // n_levels
+                    print(f"  推断每个level的通道数: {normalizer.n_channels_per_level}")
+                else:
+                    raise ValueError(
+                        f"无法推断每个level的通道数。总通道数: {C}, Levels数: {n_levels}"
+                    )
+    else:
+        # 全局归一化：只传递stats
+        normalizer.load_stats(normalizer_data.get("stats", normalizer_data))
+
     data = normalizer.transform(data, name=config["variable"])
     print(f"归一化后范围: [{data.min():.2f}, {data.max():.2f}]")
 
@@ -514,9 +613,18 @@ def main():
     print("Step 6: 评估和反归一化")
     print("-" * 80)
 
+    # 如果指定了 --levels，只选择对应的 channels 进行评估
+    if channel_indices is not None:
+        print(f"\n选择 channels {channel_indices} (levels {selected_levels}) 进行评估")
+        y_pred_selected = y_pred[:, :, channel_indices, :, :]
+        y_true_selected = y_true[:, :, channel_indices, :, :]
+    else:
+        y_pred_selected = y_pred
+        y_true_selected = y_true
+
     # 归一化空间的指标
     print("\n归一化空间的指标:")
-    metrics_norm = calculate_metrics(y_pred, y_true, ensemble=False)
+    metrics_norm = calculate_metrics(y_pred_selected, y_true_selected, ensemble=False)
     print(format_metrics(metrics_norm))
 
     # 反归一化到物理单位
@@ -538,18 +646,28 @@ def main():
     print(f"  预测范围: [{y_pred_phys.min():.2f}, {y_pred_phys.max():.2f}] K")
     print(f"  真值范围: [{y_true_phys.min():.2f}, {y_true_phys.max():.2f}] K")
 
+    # 如果指定了 --levels，只选择对应的 channels 进行评估
+    if channel_indices is not None:
+        y_pred_phys_selected = y_pred_phys[:, :, channel_indices, :, :]
+        y_true_phys_selected = y_true_phys[:, :, channel_indices, :, :]
+    else:
+        y_pred_phys_selected = y_pred_phys
+        y_true_phys_selected = y_true_phys
+
     # 物理空间的指标
     print("\n物理空间的指标 (原始尺度):")
-    metrics_phys = calculate_metrics(y_pred_phys, y_true_phys, ensemble=False)
+    metrics_phys = calculate_metrics(
+        y_pred_phys_selected, y_true_phys_selected, ensemble=False
+    )
     print(format_metrics(metrics_phys))
 
     # 计算每个lead time的RMSE
     print("\n每个lead time的RMSE:")
-    T_out = y_pred_phys.shape[1]
+    T_out = y_pred_phys_selected.shape[1]
     rmse_per_leadtime = {}
     for t in range(T_out):
-        y_pred_t = y_pred_phys[:, t, :, :, :]  # (N, C, H, W)
-        y_true_t = y_true_phys[:, t, :, :, :]
+        y_pred_t = y_pred_phys_selected[:, t, :, :, :]  # (N, C, H, W)
+        y_true_t = y_true_phys_selected[:, t, :, :, :]
         rmse_t = np.sqrt(np.mean((y_pred_t - y_true_t) ** 2))
         rmse_per_leadtime[f"rmse_step_{t+1}"] = float(rmse_t)
         print(f"  Step {t+1} ({(t+1)*6}h): {rmse_t:.4f} K")
@@ -664,8 +782,8 @@ def main():
     # 可视化函数会生成timeseries_overall（物理值），但不会生成timeseries_physical
     # （因为WeatherDiff的归一化方式与可视化函数预期不兼容）
     visualize_predictions_improved(
-        y_true_phys,  # y_test (物理值数据，可能已转置)
-        y_pred_phys,  # y_test_pred (物理值数据，可能已转置)
+        y_true_phys_selected,  # y_test (物理值数据，可能已转置)
+        y_pred_phys_selected,  # y_test_pred (物理值数据，可能已转置)
         metrics_phys,  # test_metrics (物理空间指标)
         [variable],  # variables
         "diffusion",  # model_name

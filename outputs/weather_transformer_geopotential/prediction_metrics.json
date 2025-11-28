@@ -1,0 +1,33 @@
+{
+  "mode": "weather_transformer_geopotential",
+  "normalized_space": {
+    "mse": 0.0038386711990939662,
+    "rmse": 0.0619570108954101,
+    "mae": 0.041527300823594834,
+    "rmse_step_1": 0.03477335100145173,
+    "rmse_step_2": 0.04905876483397469,
+    "rmse_step_3": 0.06677791414345689,
+    "rmse_step_4": 0.08531967318338467
+  },
+  "physical_space": {
+    "mse": 43919.913642750915,
+    "rmse": 209.5707843253704,
+    "mae": 140.46689597740254,
+    "rmse_step_1": 117.62153043983457,
+    "rmse_step_2": 165.9422182526827,
+    "rmse_step_3": 225.8775825431769,
+    "rmse_step_4": 288.5954401126672
+  },
+  "physical_space_rmse_per_leadtime": {
+    "rmse_step_1": 117.62153043983457,
+    "rmse_step_2": 165.9422182526827,
+    "rmse_step_3": 225.8775825431769,
+    "rmse_step_4": 288.5954401126672
+  },
+  "time_slice": "2020-01-01:2020-12-31",
+  "n_samples": 1449,
+  "variables": [
+    "geopotential"
+  ],
+  "data_format": "spatial"
+}

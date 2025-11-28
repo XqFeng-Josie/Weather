@@ -56,6 +56,19 @@ def parse_args():
         help="Variables to predict (comma-separated, e.g., 2m_temperature,geopotential)",
     )
     parser.add_argument(
+        "--levels",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Pressure levels for variables with a level dimension "
+            "(e.g. 500 700 850). "
+            "如果指定，则只使用这些层的数据进行训练（适用于 flat 和 spatial 模型）。"
+            "如果不指定，默认使用所有可用的 levels。"
+            "例如：`--levels 500` 只使用 500hPa，`--levels 500 700 850` 使用多个层。"
+        ),
+    )
+    parser.add_argument(
         "--time-slice",
         type=str,
         default="2020-01-01:2020-12-31",
@@ -182,6 +195,10 @@ def create_model(args, data_info):
 
 def main():
     args = parse_args()
+    # levels=""
+    if args.levels is None or args.levels == '""':
+        args.levels = ""
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -203,7 +220,19 @@ def main():
     # 解析变量列表（逗号分割）
     variables = [v.strip() for v in args.variables.split(",")]
 
-    loader = WeatherDataLoader(data_path=args.data_path, variables=variables)
+    # 如果用户指定了 levels，则传给数据加载器
+    # 适用于 flat 和 spatial 模型
+    levels = args.levels
+    if levels is not None:
+        print(f"Using specified levels: {levels}")
+    else:
+        print("Using all available levels (default)")
+
+    loader = WeatherDataLoader(
+        data_path=args.data_path,
+        variables=variables,
+        levels=levels,
+    )
     start, end = args.time_slice.split(":")
     ds = loader.load_data(time_slice=slice(start, end))
     features = loader.prepare_features(normalize=True)
@@ -275,13 +304,34 @@ def main():
     # 保存完整配置
     config["output_length"] = args.output_length
     config["variables"] = variables  # 保存变量列表，predict时使用
-    
+    # 记录实际使用的 levels（无 level 变量时此字段可选）
+    # loader.levels 会是实际使用的 levels（可能是默认值 [500, 700, 850] 或用户指定的值）
+    config["levels"] = loader.levels
+
     # 保存归一化参数（关键！）
+    # 此处需要兼容：
+    # - 无 level 变量：mean/std 为标量
+    # - 有 level 变量：mean/std 为 shape=(n_level,) 的数组
+    norm_mean = {}
+    norm_std = {}
+    for k, v in loader.mean.items():
+        arr = np.array(v)
+        if arr.ndim == 0:
+            norm_mean[k] = float(arr)
+        else:
+            norm_mean[k] = arr.tolist()
+    for k, v in loader.std.items():
+        arr = np.array(v)
+        if arr.ndim == 0:
+            norm_std[k] = float(arr)
+        else:
+            norm_std[k] = arr.tolist()
+
     config["normalization"] = {
-        "mean": {k: float(v) for k, v in loader.mean.items()},
-        "std": {k: float(v) for k, v in loader.std.items()},
+        "mean": norm_mean,
+        "std": norm_std,
     }
-    
+
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 
@@ -451,13 +501,14 @@ def main():
     # np.save(output_dir / "y_test.npy", y_test)
     # np.save(output_dir / "y_test_pred.npy", y_test_pred)
 
-
     print(f"\n✓ Results saved to {output_dir}")
     print(f"✓ Model saved to {output_dir}/best_model.pth")
     print(f"\nTo generate visualizations, run:")
     test_time = config.get("time_slice", "2017-01-01:2018-12-31").split(":")[-1]
     next_year = str(int(test_time[:4]) + 1)
-    print(f"  python predict.py --model-path {output_dir}/best_model.pth --time-slice {next_year}-01-01:{next_year}-12-31 --visualize --save-predictions")
+    print(
+        f"  python predict.py --model-path {output_dir}/best_model.pth --time-slice {next_year}-01-01:{next_year}-12-31 --visualize --save-predictions"
+    )
 
 
 if __name__ == "__main__":

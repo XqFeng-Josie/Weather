@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 from datetime import datetime
 import json
+import os
 import pandas as pd
 
 from src.data_loader import WeatherDataLoader
@@ -71,6 +72,15 @@ def parse_args():
         "--save-predictions",
         action="store_true",
         help="Save y_pred and y_true as numpy files for later analysis",
+    )
+    parser.add_argument(
+        "--levels",
+        type=int,
+        nargs="+",
+        default=None,
+        help="For spatial models: select specific pressure levels to evaluate/visualize "
+        "(e.g. --levels 500 or --levels 500 700 850). "
+        "Levels must be in the config. If not specified, all levels will be used.",
     )
     parser.add_argument(
         "--batch-size",
@@ -216,12 +226,22 @@ def generate_predictions(
     output_length=4,
     norm_params=None,
     batch_size=None,
+    levels=None,
 ):
     """生成预测"""
     print(f"\nGenerating predictions (format: {data_format})...")
     print(f"Variables: {variables}")
 
-    data_loader = WeatherDataLoader(data_path=data_path, variables=variables)
+    # 如果指定了 levels，则使用指定的 levels（从 config 读取）
+    # 如果不指定，则使用所有可用的 levels（默认行为）
+    if levels is not None:
+        print(f"Using levels from config: {levels}")
+    else:
+        print("Using all available levels (default)")
+
+    data_loader = WeatherDataLoader(
+        data_path=data_path, variables=variables, levels=levels
+    )
     start, end = time_slice.split(":")
     ds = data_loader.load_data(time_slice=slice(start, end))
 
@@ -239,68 +259,73 @@ def generate_predictions(
     # 预测（支持batch预测以节省内存）
     # 判断是否需要batch预测
     n_samples = X.shape[0]
-    
+
     # 确定batch size
     if batch_size is None:
         batch_size = 256  # 默认batch size
     else:
         print(f"Using custom batch_size={batch_size}")
-    
+
     # 如果样本数较少，直接一次预测
     if n_samples <= batch_size:
         y_pred = trainer.predict(X)
     else:
         # 分batch预测
-        print(f"Predicting in batches ({n_samples} samples, batch_size={batch_size})...")
+        print(
+            f"Predicting in batches ({n_samples} samples, batch_size={batch_size})..."
+        )
         y_pred_list = []
-        
+
         for i in range(0, n_samples, batch_size):
             end_idx = min(i + batch_size, n_samples)
             X_batch = X[i:end_idx]
             y_pred_batch = trainer.predict(X_batch)
             y_pred_list.append(y_pred_batch)
-            
+
             # 打印进度
-            print(f"  Batch {i//batch_size + 1}/{(n_samples + batch_size - 1)//batch_size}: "
-                  f"samples {i} to {end_idx-1}")
-        
+            print(
+                f"  Batch {i//batch_size + 1}/{(n_samples + batch_size - 1)//batch_size}: "
+                f"samples {i} to {end_idx-1}"
+            )
+
         # 合并所有batch的结果
         import numpy as np
+
         y_pred = np.concatenate(y_pred_list, axis=0)
         print(f"✓ Batch prediction completed")
 
     print(f"Prediction shape: {y_pred.shape}")
-    
+
     # 获取空间坐标（如果是空间数据）
     spatial_coords = None
     if data_format == "spatial":
         H, W = data_loader.spatial_shape
         print(f"Spatial shape: H={H}, W={W}")
-        
-        if hasattr(ds, 'latitude') and hasattr(ds, 'longitude'):
+
+        if hasattr(ds, "latitude") and hasattr(ds, "longitude"):
             lat_values = ds.latitude.values
             lon_values = ds.longitude.values
             print(f"Dataset coords: lat={len(lat_values)}, lon={len(lon_values)}")
-            
+
             # 验证坐标长度是否匹配
             if len(lat_values) == H and len(lon_values) == W:
                 spatial_coords = {
-                    'lat': lat_values,
-                    'lon': lon_values,
+                    "lat": lat_values,
+                    "lon": lon_values,
                 }
                 print("Using dataset coordinates")
             else:
                 print(f"Warning: Coordinate mismatch. Using default coordinates.")
                 spatial_coords = {
-                    'lat': np.linspace(-90, 90, H),
-                    'lon': np.linspace(0, 360, W),
+                    "lat": np.linspace(-90, 90, H),
+                    "lon": np.linspace(0, 360, W),
                 }
         else:
             # 默认坐标
             print("Dataset has no coordinates. Using default coordinates.")
             spatial_coords = {
-                'lat': np.linspace(-90, 90, H),
-                'lon': np.linspace(0, 360, W),
+                "lat": np.linspace(-90, 90, H),
+                "lon": np.linspace(0, 360, W),
             }
 
     return {
@@ -423,51 +448,77 @@ def save_predictions_numpy(results, output_path):
 def denormalize_predictions(y_pred, y_true, variables, data_format, norm_params):
     """
     反归一化预测结果到物理单位
-    
+
     Args:
         y_pred: 归一化后的预测值
         y_true: 归一化后的真值
         variables: 变量列表
         data_format: 数据格式 ('flat' 或 'spatial')
         norm_params: 归一化参数 {'mean': {var: value}, 'std': {var: value}}
-    
+
     Returns:
         y_pred_phys, y_true_phys: 物理单位的预测和真值
     """
     if norm_params is None:
         print("⚠️  警告: 没有归一化参数，无法反归一化")
         return y_pred, y_true
-    
+
     mean_dict = norm_params.get("mean", {})
     std_dict = norm_params.get("std", {})
-    
+
     if not mean_dict or not std_dict:
         print("⚠️  警告: 归一化参数格式不正确，无法反归一化")
         return y_pred, y_true
-    
+
     # 复制数据以避免修改原始数组
     y_pred_phys = y_pred.copy()
     y_true_phys = y_true.copy()
-    
+
     if data_format == "spatial":
         # Spatial格式: (samples, lead_time, channels, H, W)
         # 假设每个变量对应一个或多个通道
         # 对于单变量，所有通道使用该变量的归一化参数
         # 对于多变量，按顺序分配通道
-        
+
         n_channels = y_pred.shape[2]
         n_variables = len(variables)
-        
+
         if n_variables == 1:
-            # 单变量：所有通道使用同一变量的归一化参数
+            # 单变量：所有通道对应同一变量，但可能按 level 有独立的 mean/std
             var_name = variables[0]
             if var_name in mean_dict and var_name in std_dict:
                 mean_val = mean_dict[var_name]
                 std_val = std_dict[var_name]
-                # 反归一化: x * std + mean
-                y_pred_phys = y_pred_phys * std_val + mean_val
-                y_true_phys = y_true_phys * std_val + mean_val
-                print(f"  反归一化: {var_name} (所有 {n_channels} 个通道)")
+
+                mean_arr = np.array(mean_val)
+                std_arr = np.array(std_val)
+
+                if mean_arr.ndim == 0:
+                    # 标量：所有通道使用相同的 mean/std
+                    y_pred_phys = y_pred_phys * std_arr + mean_arr
+                    y_true_phys = y_true_phys * std_arr + mean_arr
+                    print(
+                        f"  反归一化: {var_name} (所有 {n_channels} 个通道, 标量统计量)"
+                    )
+                elif mean_arr.ndim == 1 and mean_arr.shape[0] == n_channels:
+                    # 按通道（例如按 level）分别的 mean/std
+                    mean_b = mean_arr.reshape(1, 1, n_channels, 1, 1)
+                    std_b = std_arr.reshape(1, 1, n_channels, 1, 1)
+                    y_pred_phys = y_pred_phys * std_b + mean_b
+                    y_true_phys = y_true_phys * std_b + mean_b
+                    print(
+                        f"  反归一化: {var_name} (按通道/level 统计量, channels={n_channels})"
+                    )
+                else:
+                    # 回退：使用整体均值/标准差
+                    mean_scalar = float(mean_arr.mean())
+                    std_scalar = float(std_arr.mean())
+                    y_pred_phys = y_pred_phys * std_scalar + mean_scalar
+                    y_true_phys = y_true_phys * std_scalar + mean_scalar
+                    print(
+                        f"⚠️  {var_name} 的统计量形状 {mean_arr.shape} 与通道数 {n_channels} 不匹配，"
+                        "使用整体均值/标准差进行反归一化"
+                    )
             else:
                 print(f"⚠️  警告: 变量 {var_name} 的归一化参数不存在")
         else:
@@ -493,25 +544,45 @@ def denormalize_predictions(y_pred, y_true, variables, data_format, norm_params)
                     std_val = std_dict[var_name]
                     y_pred_phys = y_pred_phys * std_val + mean_val
                     y_true_phys = y_true_phys * std_val + mean_val
-                    print(f"⚠️  通道数({n_channels})与变量数({n_variables})不匹配，使用第一个变量 {var_name} 的参数")
-    
+                    print(
+                        f"⚠️  通道数({n_channels})与变量数({n_variables})不匹配，使用第一个变量 {var_name} 的参数"
+                    )
+
     else:  # flat format
         # Flat格式: (samples, lead_time, features)
         # 特征被展平，需要知道每个特征对应的变量
         # 简化处理：假设每个变量贡献相同数量的特征，或使用第一个变量的参数
-        
+
         n_features = y_pred.shape[2]
         n_variables = len(variables)
-        
+
         if n_variables == 1:
             # 单变量：所有特征使用该变量的归一化参数
             var_name = variables[0]
             if var_name in mean_dict and var_name in std_dict:
                 mean_val = mean_dict[var_name]
                 std_val = std_dict[var_name]
-                y_pred_phys = y_pred_phys * std_val + mean_val
-                y_true_phys = y_true_phys * std_val + mean_val
-                print(f"  反归一化: {var_name} (所有 {n_features} 个特征)")
+
+                mean_arr = np.array(mean_val)
+                std_arr = np.array(std_val)
+
+                if mean_arr.ndim == 0:
+                    # 标量统计量：所有特征相同
+                    y_pred_phys = y_pred_phys * std_arr + mean_arr
+                    y_true_phys = y_true_phys * std_arr + mean_arr
+                    print(
+                        f"  反归一化: {var_name} (所有 {n_features} 个特征, 标量统计量)"
+                    )
+                else:
+                    # 目前flat格式不显式区分level/空间位置，这里使用整体均值/标准差避免形状错误
+                    mean_scalar = float(mean_arr.mean())
+                    std_scalar = float(std_arr.mean())
+                    y_pred_phys = y_pred_phys * std_scalar + mean_scalar
+                    y_true_phys = y_true_phys * std_scalar + mean_scalar
+                    print(
+                        f"⚠️  flat格式: {var_name} 的统计量为向量形状 {mean_arr.shape}，"
+                        "目前使用整体均值/标准差进行近似反归一化"
+                    )
             else:
                 print(f"⚠️  警告: 变量 {var_name} 的归一化参数不存在")
         else:
@@ -523,9 +594,11 @@ def denormalize_predictions(y_pred, y_true, variables, data_format, norm_params)
                 std_val = std_dict[var_name]
                 y_pred_phys = y_pred_phys * std_val + mean_val
                 y_true_phys = y_true_phys * std_val + mean_val
-                print(f"⚠️  多变量flat格式: 使用第一个变量 {var_name} 的参数进行反归一化")
+                print(
+                    f"⚠️  多变量flat格式: 使用第一个变量 {var_name} 的参数进行反归一化"
+                )
                 print(f"   (注意: 这可能导致多变量情况下某些变量的反归一化不准确)")
-    
+
     return y_pred_phys, y_true_phys
 
 
@@ -545,12 +618,22 @@ def main():
     # 从config读取变量列表（如果有的话）
     variables = config.get("variables", ["2m_temperature"])
 
+    # 从config读取训练时使用的 levels（如果有的话）
+    # 如果 config 中没有 levels 或 levels 为 None，则传入空列表 [] 表示使用所有可用的 levels
+    levels = config.get("levels", None)
+    if levels is not None:
+        print(f"\nUsing levels from training config: {levels}")
+    else:
+        print("\nNo levels specified in config, will use all available levels")
+        # 传入空列表 [] 表示使用所有可用的 levels（WeatherDataLoader 会处理）
+        levels = []
+
     # 获取归一化参数（关键！）
     norm_params = config.get("normalization", None)
     if norm_params is None:
         print("\n⚠️  WARNING: No normalization parameters found in config!")
         print("   Predictions may be inaccurate. Please retrain the model.")
-    
+
     results = generate_predictions(
         trainer,
         args.data_path,
@@ -561,7 +644,92 @@ def main():
         output_length=config.get("output_length", 4),
         norm_params=norm_params,
         batch_size=args.batch_size,
+        levels=levels,
     )
+
+    # 可选：仅关注某个或某些 pressure level（从 config 读取可用 levels）
+    selected_levels = args.levels
+    channel_indices = None  # 用于后续的反归一化逻辑（存储选中的 channel 索引列表）
+    if selected_levels is not None and data_format == "spatial":
+        # 从 config 读取训练时使用的 levels
+        available_levels = config.get("levels", None)
+        if available_levels is None:
+            raise ValueError(
+                "No 'levels' found in config. Cannot select specific levels. "
+                "Please use all levels (omit --levels argument)."
+            )
+
+        # 确保 available_levels 是列表
+        if not isinstance(available_levels, list):
+            available_levels = [available_levels]
+
+        # 检查用户指定的 levels 是否在可用的 levels 中
+        invalid_levels = [l for l in selected_levels if l not in available_levels]
+        if invalid_levels:
+            raise ValueError(
+                f"Invalid levels: {invalid_levels}. "
+                f"Available levels from config: {available_levels}"
+            )
+
+        # 将 level 值转换为 channel 索引
+        # channel 的顺序与 available_levels 的顺序一致
+        channel_indices = []
+        for level in selected_levels:
+            if level in available_levels:
+                channel_indices.append(available_levels.index(level))
+
+        print(
+            f"\nSelecting levels {selected_levels} "
+            f"(channel indices: {channel_indices})"
+        )
+
+        y_true_full = results["y_true"]
+        y_pred_full = results["y_pred"]
+
+        # 检查索引是否有效
+        for idx in channel_indices:
+            if idx < 0 or idx >= y_true_full.shape[2]:
+                raise ValueError(
+                    f"Channel index {idx} (from level {available_levels[idx]}) "
+                    f"out of range for {y_true_full.shape[2]} channels"
+                )
+
+        # 只保留指定的通道，保持通道维度顺序
+        y_true = y_true_full[:, :, channel_indices, :, :]
+        y_pred = y_pred_full[:, :, channel_indices, :, :]
+
+        results["y_true"] = y_true
+        results["y_pred"] = y_pred
+
+        # 更新 results 中的 features，只保留选中的 channels 对应的 features
+        if "features" in results:
+            original_features = results["features"]
+            # 如果是单变量多 level，features 可能是列表，每个元素对应一个 level
+            if isinstance(original_features, list) and len(original_features) == len(
+                available_levels
+            ):
+                results["features"] = [
+                    original_features[idx] for idx in channel_indices
+                ]
+            elif isinstance(original_features, list):
+                # 如果 features 的数量与 channels 不匹配，保持原样
+                pass
+
+        print(
+            f"  New shapes -> y_true: {y_true.shape}, y_pred: {y_pred.shape} "
+            f"({len(selected_levels)} channels selected)"
+        )
+    else:
+        # 使用所有通道（默认行为）
+        y_true = results["y_true"]
+        y_pred = results["y_pred"]
+        if data_format == "spatial" and selected_levels is None:
+            available_levels = config.get("levels", None)
+            n_channels = y_pred.shape[2]
+            if available_levels:
+                print(f"\nUsing all {n_channels} channels (levels: {available_levels})")
+            else:
+                print(f"\nUsing all {n_channels} channels (default behavior)")
 
     # 3. 保存
     start_time = args.time_slice.split(":")[0] if ":" in args.time_slice else None
@@ -576,31 +744,29 @@ def main():
     print("Evaluation")
     print("=" * 80)
 
-    y_true = results["y_true"]
-    y_pred = results["y_pred"]
-    
+    # 这里的 y_true/y_pred 已根据 selected_levels 进行过可能的裁剪
     # 4.1 计算归一化空间的指标
     print("\n" + "-" * 80)
     print("归一化空间的指标")
     print("-" * 80)
-    
+
     metrics_norm = compute_metrics(y_pred, y_true)
-    
+
     print("\nOverall Metrics (Normalized Space):")
     print(f"  RMSE: {metrics_norm['rmse']:.4f}")
     print(f"  MAE:  {metrics_norm['mae']:.4f}")
-    
+
     print("\nPer Lead Time (Normalized Space):")
     for t in range(y_true.shape[1]):
         rmse_t = metrics_norm[f"rmse_step_{t+1}"]
         print(f"  Lead time {t+1}: RMSE = {rmse_t:.4f}")
-    
+
     # 多变量独立评估（归一化空间）
     if len(variables) > 1:
         var_metrics_norm = compute_variable_wise_metrics(
             y_pred, y_true, len(variables), data_format
         )
-        
+
         print("\nPer-Variable Metrics (Normalized Space):")
         for var_idx, var_name in enumerate(variables):
             rmse = var_metrics_norm.get(f"var_{var_idx}_rmse", 0)
@@ -608,35 +774,65 @@ def main():
             print(f"  {var_name}:")
             print(f"    RMSE: {rmse:.4f}")
             print(f"    MAE:  {mae:.4f}")
-        
+
         # 合并到metrics字典
         metrics_norm.update(var_metrics_norm)
-    
+
     # 4.2 反归一化到物理单位
     print("\n" + "-" * 80)
     print("反归一化到物理单位")
     print("-" * 80)
-    
+
+    # 如果只关注某个或某些通道（例如某些levels），且是单变量空间模型，
+    # 且归一化参数是按 level 分开的，则使用对应通道的统计量进行反归一化
+    norm_params_for_denorm = norm_params
+    if (
+        channel_indices is not None
+        and data_format == "spatial"
+        and len(variables) == 1
+        and len(channel_indices) == 1
+        and norm_params is not None
+    ):
+        # 只处理单个 level 的情况，多个 levels 时使用完整的归一化参数
+        var_name = variables[0]
+        mean_dict = norm_params.get("mean", {})
+        std_dict = norm_params.get("std", {})
+        if var_name in mean_dict and var_name in std_dict:
+            mean_arr = np.array(mean_dict[var_name])
+            std_arr = np.array(std_dict[var_name])
+            channel_idx = channel_indices[0]
+            if mean_arr.ndim == 1 and mean_arr.shape[0] > channel_idx:
+                mean_sel = float(mean_arr[channel_idx])
+                std_sel = float(std_arr[channel_idx])
+                norm_params_for_denorm = {
+                    "mean": {var_name: mean_sel},
+                    "std": {var_name: std_sel},
+                }
+                print(
+                    f"Using per-level normalization stats for level {selected_levels[0]} "
+                    f"(channel {channel_idx}): mean={mean_sel:.4f}, std={std_sel:.4f}"
+                )
+
     y_pred_phys, y_true_phys = denormalize_predictions(
-        y_pred, y_true, variables, data_format, norm_params
+        y_pred, y_true, variables, data_format, norm_params_for_denorm
     )
-    
+
     # 显示物理值的范围
     print(f"\n✓ 反归一化完成")
     print(f"  预测范围: [{y_pred_phys.min():.2f}, {y_pred_phys.max():.2f}]")
     print(f"  真值范围: [{y_true_phys.min():.2f}, {y_true_phys.max():.2f}]")
-    
+
     # 4.3 计算物理空间的指标
     print("\n" + "-" * 80)
     print("物理空间的指标 (原始尺度)")
     print("-" * 80)
-    
+
     metrics_phys = compute_metrics(y_pred_phys, y_true_phys)
-    
+
     print("\nOverall Metrics (Physical Space):")
     print(f"  RMSE: {metrics_phys['rmse']:.4f}")
     print(f"  MAE:  {metrics_phys['mae']:.4f}")
-    
+
     print("\nPer Lead Time (Physical Space):")
     T_out = y_true_phys.shape[1]
     rmse_per_leadtime = {}
@@ -644,13 +840,13 @@ def main():
         rmse_t = metrics_phys[f"rmse_step_{t+1}"]
         rmse_per_leadtime[f"rmse_step_{t+1}"] = float(rmse_t)
         print(f"  Lead time {t+1} ({(t+1)*6}h): RMSE = {rmse_t:.4f}")
-    
+
     # 多变量独立评估（物理空间）
     if len(variables) > 1:
         var_metrics_phys = compute_variable_wise_metrics(
             y_pred_phys, y_true_phys, len(variables), data_format
         )
-        
+
         print("\nPer-Variable Metrics (Physical Space):")
         for var_idx, var_name in enumerate(variables):
             rmse = var_metrics_phys.get(f"var_{var_idx}_rmse", 0)
@@ -658,13 +854,13 @@ def main():
             print(f"  {var_name}:")
             print(f"    RMSE: {rmse:.4f}")
             print(f"    MAE:  {mae:.4f}")
-        
+
         # 合并到metrics字典
         metrics_phys.update(var_metrics_phys)
-    
+
     # 4.4 合并所有指标
     metrics = {
-        "mode": model_name,
+        "mode": args.model_path.split("/")[-2],
         "normalized_space": {k: float(v) for k, v in metrics_norm.items()},
         "physical_space": {k: float(v) for k, v in metrics_phys.items()},
         "physical_space_rmse_per_leadtime": rmse_per_leadtime,
@@ -673,31 +869,37 @@ def main():
         "variables": variables,
         "data_format": data_format,
     }
-    
+
     # 保存指标到文件
     output_dir = Path(args.output).parent
     metrics_path = output_dir / "prediction_metrics.json"
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
     print(f"\n✓ Metrics saved to {metrics_path}")
-    
+
     # 5. 可视化
     if args.visualize:
         print("\n" + "=" * 80)
         print("Generating Visualizations")
         print("=" * 80)
-        
+
         model_name = config.get("model", "unknown")
-        
+
         # 生成可视化（使用物理值，不传入norm_params表示已经是物理值）
         visualize_predictions_improved(
-            y_true_phys, y_pred_phys, metrics_phys, variables, model_name, output_dir, data_format,
+            y_true_phys,
+            y_pred_phys,
+            metrics_phys,
+            variables,
+            model_name,
+            output_dir,
+            data_format,
             norm_params=None,  # None表示数据已经是物理值
-            spatial_coords=results.get("spatial_coords", None)
+            spatial_coords=results.get("spatial_coords", None),
         )
-        
+
         print(f"\n✓ Visualizations saved to {output_dir}/")
-    
+
     # 6. 保存预测结果（可选）
     if args.save_predictions:
         pred_dir = output_dir / "predictions_data"

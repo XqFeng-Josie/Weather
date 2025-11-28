@@ -1,0 +1,33 @@
+{
+  "mode": "lr_multi_specific_humidity",
+  "normalized_space": {
+    "mse": 0.23483178963184226,
+    "rmse": 0.48459445893637937,
+    "mae": 0.3402678101754739,
+    "rmse_step_1": 0.4236805737524693,
+    "rmse_step_2": 0.47293368390983,
+    "rmse_step_3": 0.5064935368009438,
+    "rmse_step_4": 0.5287910341094072
+  },
+  "physical_space": {
+    "mse": 1.4312510656596695e-06,
+    "rmse": 0.0011963490567805323,
+    "mae": 0.0008400407108444645,
+    "rmse_step_1": 0.0010459670874023489,
+    "rmse_step_2": 0.0011675613623546388,
+    "rmse_step_3": 0.0012504126983771341,
+    "rmse_step_4": 0.0013054599433086906
+  },
+  "physical_space_rmse_per_leadtime": {
+    "rmse_step_1": 0.0010459670874023489,
+    "rmse_step_2": 0.0011675613623546388,
+    "rmse_step_3": 0.0012504126983771341,
+    "rmse_step_4": 0.0013054599433086906
+  },
+  "time_slice": "2020-01-01:2020-12-31",
+  "n_samples": 1449,
+  "variables": [
+    "specific_humidity"
+  ],
+  "data_format": "flat"
+}

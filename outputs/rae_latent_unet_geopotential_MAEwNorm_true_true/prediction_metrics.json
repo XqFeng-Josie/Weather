@@ -1,0 +1,30 @@
+{
+  "mode": "rae_latent_unet_geopotential_MAEwNorm_true_true",
+  "vae_type": "rae",
+  "normalized_space": {
+    "mae": 0.07406282424926758,
+    "rmse": 0.16591502726078033,
+    "psnr": 15.602285385131836,
+    "ssim": 0.9345843891950445,
+    "mean_bias": -0.04145798087120056,
+    "std_ratio": 1.1059858798980713,
+    "correlation": 0.9444547761862404
+  },
+  "physical_space": {
+    "mae": 566.1353759765625,
+    "rmse": 1268.2481689453125,
+    "psnr": -62.064090728759766,
+    "ssim": 0.9396693393992279,
+    "mean_bias": -317.515625,
+    "std_ratio": 1.1059905290603638,
+    "correlation": 0.944454776184691
+  },
+  "physical_space_rmse_per_leadtime": {
+    "rmse_step_1": 1255.54931640625,
+    "rmse_step_2": 1258.93408203125,
+    "rmse_step_3": 1267.92919921875,
+    "rmse_step_4": 1290.291015625
+  },
+  "time_slice": "2020-01-01:2020-12-31",
+  "n_samples": 1449
+}

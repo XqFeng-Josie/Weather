@@ -101,7 +101,7 @@ def main():
     )
 
     # 测试参数
-    parser.add_argument("--n-test-samples", type=int, default=100, help="测试样本数量")
+    parser.add_argument("--n-test-samples", type=int, default=-1, help="测试样本数量")
     parser.add_argument(
         "--output-dir", type=str, default="outputs/vae_reconstruction", help="输出目录"
     )
@@ -142,8 +142,9 @@ def main():
     print(f"找到 {len(image_files)} 张图像")
     
     # 限制样本数量
-    n_samples = min(args.n_test_samples, len(image_files))
-    image_files = image_files[:n_samples]
+    if args.n_test_samples == -1:
+        args.n_test_samples = len(image_files)
+    image_files = image_files[:args.n_test_samples]
     
     # 加载图像
     images = []

@@ -1,0 +1,35 @@
+{
+  "model": "lstm",
+  "data_path": "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr",
+  "variables": [
+    "geopotential"
+  ],
+  "levels": [
+    500
+  ],
+  "time_slice": "2015-01-01:2019-12-31",
+  "input_length": 12,
+  "output_length": 4,
+  "epochs": 200,
+  "batch_size": 32,
+  "lr": 0.0001,
+  "early_stop": 10,
+  "gradient_accumulation_steps": 1,
+  "hidden_size": 256,
+  "num_layers": 2,
+  "dropout": 0.2,
+  "output_dir": "outputs/lstm_geopotential",
+  "input_size": 2048,
+  "normalization": {
+    "mean": {
+      "geopotential": [
+        54205.0703125
+      ]
+    },
+    "std": {
+      "geopotential": [
+        3382.519287109375
+      ]
+    }
+  }
+}

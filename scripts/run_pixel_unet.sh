@@ -13,7 +13,7 @@ set -e
 # export CUDA_VISIBLE_DEVICES=6
 
 # ============ 参数配置 ============
-VARIABLE="2m_temperature"
+VARIABLES="${1:-specific_humidity}" # 2m_temperature,geopotential,specific_humidity
 TIME_SLICE="2015-01-01:2019-12-31"          # 训练数据
 PREDICTION_TIME_SLICE="2020-01-01:2020-12-31"  # 预测数据
 
@@ -29,17 +29,26 @@ BATCH_SIZE=16
 LR=0.0001
 EARLY_STOPPING=10
 
+if [ "$VARIABLES" == "geopotential" ]; then
+    LEVELS="500"
+elif [ "$VARIABLES" == "specific_humidity" ]; then
+    LEVELS="700"
+else
+    LEVELS=""
+fi
+
+
 # 数据参数
 NORMALIZATION="minmax"  # minmax或zscore
 DATA_PATH="gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr"
 
 # 输出目录
-OUTPUT_DIR="outputs/pixel_unet_${VARIABLE}"
+OUTPUT_DIR="outputs/pixel_unet_${VARIABLES}"
 
 echo "========================================================================"
 echo "像素空间U-Net训练和预测"
 echo "========================================================================"
-echo "变量: $VARIABLE"
+echo "变量: $VARIABLES"
 echo "训练时间: $TIME_SLICE"
 echo "预测时间: $PREDICTION_TIME_SLICE"
 echo "输出目录: $OUTPUT_DIR"
@@ -50,9 +59,9 @@ echo "------------------------------------------------------------------------"
 echo "Step 1: 训练像素空间U-Net"
 echo "------------------------------------------------------------------------"
 
-python train_pixel_unet.py \
+train_cmd="python train_pixel_unet.py \
     --data-path $DATA_PATH \
-    --variable $VARIABLE \
+    --variables $VARIABLES \
     --time-slice $TIME_SLICE \
     --input-length $INPUT_LENGTH \
     --output-length $OUTPUT_LENGTH \
@@ -63,7 +72,13 @@ python train_pixel_unet.py \
     --lr $LR \
     --normalization $NORMALIZATION \
     --early-stopping $EARLY_STOPPING \
-    --output-dir $OUTPUT_DIR
+    --output-dir $OUTPUT_DIR"
+
+
+if [ -n "$LEVELS" ]; then
+    train_cmd="$train_cmd --levels $LEVELS"
+fi
+# eval $train_cmd
 
 echo ""
 echo "✓ 训练完成! 模型保存在: $OUTPUT_DIR"
@@ -74,13 +89,18 @@ echo "------------------------------------------------------------------------"
 echo "Step 2: 生成预测和可视化"
 echo "------------------------------------------------------------------------"
 
-python predict_unet.py \
+predict_cmd="python predict_pixel_unet.py \
     --mode pixel \
     --model-dir $OUTPUT_DIR \
     --data-path $DATA_PATH \
     --time-slice $PREDICTION_TIME_SLICE \
     --output-dir $OUTPUT_DIR \
-    --batch-size 32
+    --batch-size 32 "
+
+if [ -n "$LEVELS" ]; then
+    predict_cmd="$predict_cmd --levels $LEVELS"
+fi
+eval $predict_cmd
 
 echo ""
 echo "✓ 预测完成!"
