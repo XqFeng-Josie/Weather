@@ -616,7 +616,13 @@ WeatherDiff是基于Stable Diffusion架构的天气预测模块，将气象网�
 
 ### RAE (Representation Autoencoder)
 
-#### 模型结构
+**当前工程中主要用到两种模式：**
+
+1. **Stage-A（RAE 重建）**：只看 Encoder + Decoder，对未来天气场做重建。
+2. **Stage-1 Direct（直接预测）**：用历史序列通过 Encoder → Decoder 直接预测未来天气场（不经过 DiT）。
+
+
+#### RAE 重建模型结构
 
 ```
 编码器 (Encoder):
@@ -649,6 +655,8 @@ WeatherDiff是基于Stable Diffusion架构的天气预测模块，将气象网�
 - **解码**:
   - **输入**: `(batch, latent_dim, H_latent, W_latent)` - 潜向量
   - **输出**: `(batch, channels, H, W)` - 范围[-1, 1]（自动从[0, 1]转换）
+ 
+
 
 #### 支持的Encoder类型
 
@@ -735,7 +743,239 @@ latent = vae_wrapper.encode(images)  # (B, 768, 16, 16)
 reconstructed = vae_wrapper.decode(latent)  # (B, C, H, W)
 ```
 
+#### Encoder+Decoder直接预测模型结构
+```
+历史编码器 (ExternalRepEncoder for history):
+  输入历史序列: (B, T_in, C_in, H, W)
+    ↓
+  时间 + 通道拼接: (B, T_in * C_in, H, W)
+    ↓
+  1×1卷积 in_adapter: (T_in*C_in) → 3通道
+    ↓
+  Resize 到 encoder_input_size (如 518×518)
+    ↓
+  预训练 Vision Transformer 主干 (DINOv2 / MAE / SigLIP2)
+    ↓
+  History tokens:
+    (B, latent_dim, H_latent, W_latent)
+
+RAE 解码器 (RAEDecoder):
+  History tokens: (B, latent_dim, H_latent, W_latent)
+    ↓
+  RAEDecoder 直接预测未来:
+    ↓
+  预测未来天气场: (B, T_out, C_out, H, W)
+    # 例如：从 12 步历史 → 4 步未来 2m_temperature
+```
+
+#### 输入输出
+
+- **编码**:
+  - **输入**: `(B, T_in, C_in, H, W)` - x_hist
+  - **输出**: `(B, latent_dim, H_latent, W_latent)` - tokens_hist
+    - `latent_dim`: 取决于encoder（DINOv2-base: 768, SigLIP2-base: 768）
+    - `H_latent, W_latent`: 取决于encoder输入尺寸和patch大小
+  
+- **解码**:
+  - **输入**: `(B, latent_dim, H_latent, W_latent)` - tokens_hist
+  - **输出**: `(B, T_out, C_out, H, W)` - y_pred
 ---
+
+#### 支持的 Encoder 类型（示例）
+
+1.  **DINOv2-G/14**（当前实验中使用）
+    
+    -   `timm` 名称: `vit_giant_patch14_dinov2`
+        
+    -   输入尺寸: 518×518
+        
+    -   Patch size: 14
+        
+    -   Latent维度: 1536
+        
+    -   Latent空间: 37×37
+        
+2.  **DINOv2-Base/16**
+    
+    -   `facebook/dinov2-base`
+        
+    -   输入尺寸: 224×224
+        
+    -   Patch size: 16
+        
+    -   Latent维度: 768
+        
+    -   Latent空间: 14×14
+        
+3.  **SigLIP2 / MAE / 其他 ViT**
+    
+    -   通过修改 `timm.create_model` 名称即可切换；
+        
+    -   外部结构（in\_adapter → ViT → RAEDecoder）保持不变。
+        
+
+---
+
+#### 工作原理（针对当前工程）
+
+1.  **Encoder 主干冻结，只训练 in\_adapter（可选）**
+    
+    -   DINOv2 backbone 参数固定 (`freeze_backbone=True`)；
+        
+    -   1×1 in\_adapter 可以选择训练或冻结，用于把气象场映射到 encoder 期望的分布空间。
+        
+2.  **RAEDecoder 可微调**
+    
+    -   Decoder 权重从 RAE 预训练权重加载（或随机初始化），在天气任务上继续训练；
+        
+    -   Stage-A：学习「未来 → 潜空间 → 重建未来」的映射；
+        
+    -   Stage-1：学习「历史 → 潜空间 → 预测未来」的映射。
+        
+3.  **自动 resize / 插值**
+    
+    -   输入 ERA5 网格较小（64×32）；
+        
+    -   ExternalRepEncoder 内部统一 resize 到 ViT 预训练尺寸（如 518×518），编码出 37×37 tokens；
+        
+    -   Decoder 输出后再插值/reshape回原始网格大小 `(H, W)`。
+        
+4.  **灵活组合 Stage-A / Stage-1 / Stage-B**
+    
+    -   Stage-A：只看 RAE 重建质量（MSE/MAE）评估潜空间表达；
+        
+    -   Stage-1：直接用 RAE 做 deterministic 预测；
+        
+    -   Stage-B（可选）：在 latent 空间上再叠加 DH-DiT / SimpleDiT 做扩散预测（你已有的 RAE+LDM 版本）。
+        
+
+---
+
+#### 与任务的关系（天气预报）
+
+-   **优势**:
+    
+    -   ✅ **Decoder 可针对天气场微调**：相比 SD VAE 固定且偏图像，RAE decoder 在 ERA5 上可重新训练，重建/预测更贴合气象结构。
+        
+    -   ✅ **利用大规模视觉预训练（DINOv2）**：在空间结构理解上具有优势，有利于捕捉锋面、槽线、涡旋等模式。
+        
+    -   ✅ **高维 latent 表示**：1536×37×37 的 latent 容量远大于 4×(H/8×W/8)，更适合保留多变量、多时间信息。
+        
+    -   ✅ **通用性强**：同一套 ExternalRepEncoder + RAEDecoder 可以被 Stage-A 重建、Stage-1 Direct、Stage-B 扩散共享使用。
+        
+-   **局限**:
+    
+    -   ❌ 必须对 ERA5 网格做 resize（64×32 → 518×518），带来插值误差；
+        
+    -   ❌ latent 非常大，对显存和算力要求较高；
+        
+    -   ❌ Decoder / in\_adapter 需要额外训练，工程复杂度高于「直接用 SD VAE」。
+        
+
+---
+
+#### 适用场景
+
+-   ✅ 希望在天气任务中利用 DINOv2 等**强预训练视觉模型**。
+    
+-   ✅ 需要 **可微调 decoder** 来适应 ERA5/WeatherBench 数据集。
+    
+-   ✅ 对空间结构（模式识别、极端事件）精度要求较高，不满足于简单 CNN/VAE。
+    
+-   ✅ 显存 ≥ 24GB 的训练环境（尤其是使用 DINOv2-G/14 时）。
+    
+
+---
+
+#### 与 SD VAE 的区别（在本项目中的对比）
+
+| 特性 | SD VAE | RAE-Weather |
+| --- | --- | --- |
+| Latent channels | 4 | latent\_dim（如 1536 for DINOv2-G/14） |
+| Latent 空间 | (4, H/8, W/8) | (latent\_dim, H\_latent, W\_latent) |
+| Encoder 主干 | CNN-based VAE, 固定 | ViT-based（DINOv2/MAE/SigLIP2），固定 |
+| Decoder | 固定 | **可微调**（RAEDecoder） |
+| 输入范围 / 标准化 | \[-1,1\] / 简单归一化 | 标准化气象场（数据集统计/气候态） |
+| 是否 resize 输入 | 通常不需要 | 需要 resize 到 encoder\_input\_size |
+| 与任务的拟合方式 | VAE 重建图像 | RAE 重建 & 直接预测天气场 |
+
+---
+
+#### 使用示例（伪代码）
+
+**1\. 仅用 RAE 做「历史 → 未来」直接预测（Stage-1 Direct）：**
+
+```python
+import torch
+import timm
+from src.models.diffusion.latent_rae_weather import RAEDiffusionWeather, RAEConfig, ExternalRepEncoder
+
+# 1. 构建 DINOv2 backbone
+backbone = timm.create_model("vit_giant_patch14_dinov2", pretrained=True)
+
+# 2. ExternalRepEncoder，用于编码历史序列
+T_in, C_in, H, W = 12, 1, 64, 32
+in_chans_hist = T_in * C_in
+
+encoder_hist = ExternalRepEncoder(
+    backbone=backbone,
+    token_dim=1536,
+    patch_size=14,
+    in_chans=in_chans_hist,
+    remove_cls=True,
+    freeze=True,
+    target_hw=(518, 518),
+    mean=None,
+    std=None,
+).cuda()
+
+# 3. 构建 RAE 模型，只用 decoder
+rae_cfg = RAEConfig(
+    input_length=T_in,
+    output_length=4,        # 预测4步未来
+    in_channels_history=C_in,
+    out_channels_future=1,  # 2m_temperature
+    token_dim=1536,
+    patch_size=14,
+)
+rae = RAEDiffusionWeather(rae_cfg).cuda()
+
+# 4. 历史序列 → tokens → 预测未来
+B = 8
+x_hist = torch.randn(B, T_in, C_in, H, W).cuda()    # (B,12,1,64,32)
+
+x_in = x_hist.view(B, T_in * C_in, H, W)           # (B,12,64,32)
+z, Hp, Wp = encoder_hist(x_in)                    # (B, N_tokens, 1536)
+
+# 直接用 RAEDecoder 预测未来 4 步
+y_pred = rae.decode(z, Hp, Wp, H, W)              # (B, 4, 1, 64, 32)
+print(y_pred.shape)
+```
+
+**2\. 使用工程脚本训练 Stage-1 Direct（推荐）：**
+
+```bash
+python -m src.models.diffusion.train_stage1_direct_integrated \
+  --variables "2m_temperature" \
+  --time-slice "2015-01-01:2019-12-31" \
+  --input-length 12 --output-length 4 \
+  --batch-size 4 --lr 5e-5 --epochs 80 \
+  --token-dim 1536 --patch-size 14 \
+  --freeze-backbone true --train-in-adapter true \
+  --encoder-ckpt "" \
+  --output-dir ./outputs_stage1_direct_integrated
+```
+
+训练完成后，你可以在：
+
+-   `outputs_stage1_direct_integrated/metrics_stage1_direct.json` 查看 RMSE/MAE；
+    
+-   `outputs_stage1_direct_integrated/spatial_examples_stage1.png` 看空间重建/预测效果；
+    
+-   `outputs_stage1_direct_integrated/decoder_fp16.pt` / `encoder_in_adapter_fp16.pt` 读取 decoder 与 in\_adapter 权重，用于后续 RAE+LDM 的扩散天气预测。
+    
+
+
 
 ### Pixel U-Net
 
