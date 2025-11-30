@@ -108,6 +108,7 @@ hf download nyu-visionx/RAE-collections --local-dir models
 **测试的 encoder：**
 - DINOv2-B
 - DINOv2-B_decXL (更大的解码器)
+- DINOv2-B_decSmall(ViT架构的小型解码器)
 - MAE
 - MAE_decXL (更大的解码器)
 - SigLIP2
@@ -205,6 +206,7 @@ python compare_reconstructions.py \
 | Codec | RMSE (K) | MAE (K) | SSIM | 相关系数 | 状态 |
 |-------|----------|--------|------|----------|------|
 | **RAE-MAE** ⭐ | **0.94** | **0.72** | **0.999** | **0.999** | ✅ 优秀 |
+| **RAE-DINOv2-B_decSmall** | 1.20 | 0.83 | - | - | ✅ 良好 |
 | **VAE** | 2.35 | 2.01 | 0.998 | 0.998 | ✅ 良好 |
 | **RAE-MAE_decXL** | 4.44 | 3.85 | 0.992 | 0.994 | ✅ 良好 |
 | **RAE-DINOv2-B** | 4.92 | 3.90 | 0.971 | 0.972 | ✅ 良好 |
@@ -219,6 +221,7 @@ python compare_reconstructions.py \
 | **VAE** | 0.016 | 0.015 | 36.19 | 0.999 | 0.999 |
 | **RAE-MAE_decXL** | 0.037 | 0.031 | 28.71 | 0.991 | 0.994 |
 | **RAE-DINOv2-B** | 0.039 | 0.031 | 28.14 | 0.973 | 0.973 |
+| **RAE-DINOv2-B_decSmall** | 0.057 | 0.040 | - | - | - |
 | **RAE-DINOv2-B_decXL** | 0.061 | 0.046 | 24.23 | 0.956 | 0.988 |
 | **RAE-SigLIP2** | 0.051 | 0.043 | 25.85 | 0.982 | 0.984 |
 
@@ -245,6 +248,10 @@ python compare_reconstructions.py \
 5. **RAE-SigLIP2 表现较差**
    - RMSE 7.25K，接近验收标准上限
    - 不建议用于高精度预测任务
+  
+6. **RAE-DINOv2-B_decSmall**
+   - 在物理空间指标中表现超过原版RAE-DINOv2-B
+   - 归一化空间指标中表现不如原版RAE-DINOv2-B
 
 ### 推荐使用顺序
 
