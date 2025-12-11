@@ -189,7 +189,7 @@ All results are evaluation metrics in **physical space**. Three main meteorologi
 |-------|-----|---------|----------|--------|---------|--------|--------|
 | **CNN** ⭐ | 1.446 | 0.753 | **1.203** | 0.768 | 1.061 | 1.309 | 1.535 |
 | **ConvLSTM** | 1.542 | 0.758 | 1.242 | 0.736 | 1.091 | 1.365 | 1.604 |
-| **Pixel U-Net** ⭐ | - | 0.783 | 1.252 | 0.775 | 1.128 | 1.382 | 1.578 |
+| **Pixel U-Net** ⭐ | 1.572 | 0.789 | 1.254 | 0.792 | 1.138 | 1.378 | 1.571 |
 | **Weather Transformer** | 1.821 | 0.863 | 1.349 | 0.952 | 1.225 | 1.455 | 1.662 |
 | LSTM | 6.557 | 1.729 | 2.561 | 2.523 | 2.543 | 2.571 | 2.604 |
 | Multi-Output LR | 7.128 | 1.756 | 2.670 | 2.227 | 2.549 | 2.802 | 3.034 |
@@ -202,7 +202,7 @@ All results are evaluation metrics in **physical space**. Three main meteorologi
 | Model | MSE | MAE (m²/s²) | RMSE (m²/s²) | Step 1 | Step 2 | Step 3 | Step 4 |
 |-------|-----|-------------|--------------|--------|---------|--------|--------|
 | **CNN** ⭐ | 37938 | 123.2 | **194.8** | 89.5 | 140.8 | 211.0 | 281.7 |
-| **Pixel U-Net** | - | 138.8 | 201.7 | 107.8 | 156.0 | 216.2 | 283.0 |
+| **Pixel U-Net** | 39416 | 134.5 | 198.5 | 103.6 | 151.7 | 214.3 | 279.3 |
 | **Weather Transformer** | 43920 | 140.5 | 209.6 | 117.6 | 165.9 | 225.9 | 288.6 |
 | **ConvLSTM** | 48306 | 133.0 | 219.8 | 77.5 | 148.9 | 236.8 | 330.1 |
 | Multi-Output LR | 400591 | 416.7 | 632.9 | 364.5 | 540.2 | 699.7 | 829.5 |
@@ -215,10 +215,10 @@ All results are evaluation metrics in **physical space**. Three main meteorologi
 
 | Model | MSE | MAE | RMSE | Step 1 | Step 2 | Step 3 | Step 4 |
 |-------|-----|-----|------|--------|---------|--------|--------|
-| **Pixel U-Net** ⭐ | - | 0.000223 | **0.000451** | 0.000357 | 0.000417 | 0.000480 | 0.000529 |
+| **Pixel U-Net** ⭐ | - | 0.000366 | **0.000561** | 0.000327 | 0.000501 | 0.000622 | 0.000716 |
 | **ConvLSTM** | 0.0 | 0.000341 | 0.000530 | 0.000294 | 0.000459 | 0.000588 | 0.000693 |
 | **CNN** | 0.0 | 0.000362 | 0.000550 | 0.000332 | 0.000487 | 0.000608 | 0.000701 |
-| Pixel U-Net (2) | - | 0.000365 | 0.000560 | 0.000327 | 0.000501 | 0.000622 | 0.000716 |
+| Pixel U-Net (2) | - | - | - | - | - | - | - |
 | **Weather Transformer** | 0.0 | 0.000381 | 0.000583 | 0.000357 | 0.000523 | 0.000645 | 0.000738 |
 | Latent U-Net (SD-VAE) | - | 0.000575 | 0.000800 | 0.000564 | 0.000742 | 0.000853 | 0.000980 |
 | LSTM | 0.000001 | 0.000780 | 0.001109 | 0.001103 | 0.001107 | 0.001111 | 0.001115 |
@@ -237,12 +237,12 @@ All results are evaluation metrics in **physical space**. Three main meteorologi
 
 **Geopotential Height**:
 1. **CNN** (RMSE=194.8 m²/s²) - Best model ⭐
-2. **Pixel U-Net** (RMSE=201.7 m²/s²) - Second best model
+2. **Pixel U-Net** (RMSE=198.5 m²/s²) - Second best model
 3. **Weather Transformer** (RMSE=209.6 m²/s²)
 4. **ConvLSTM** (RMSE=219.8 m²/s²)
 
 **Specific Humidity**:
-1. **Pixel U-Net** (RMSE=0.000451) - Best model ⭐
+1. **Pixel U-Net** (RMSE=0.000561) - Best model ⭐
 2. **ConvLSTM** (RMSE=0.000530)
 3. **CNN** (RMSE=0.000550)
 4. **Weather Transformer** (RMSE=0.000583)

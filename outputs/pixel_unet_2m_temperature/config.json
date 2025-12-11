@@ -1,6 +1,7 @@
 {
   "data_path": "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr",
-  "variable": "2m_temperature",
+  "variables": "2m_temperature",
+  "levels": null,
   "time_slice": "2015-01-01:2019-12-31",
   "input_length": 12,
   "output_length": 4,
@@ -18,6 +19,6 @@
   "target_size": null,
   "device": "cuda",
   "num_workers": 4,
-  "output_dir": "outputs/pixel_unet",
+  "output_dir": "outputs/pixel_unet_2m_temperature",
   "seed": 42
 }

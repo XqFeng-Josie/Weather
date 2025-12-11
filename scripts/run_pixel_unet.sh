@@ -78,7 +78,7 @@ train_cmd="python train_pixel_unet.py \
 if [ -n "$LEVELS" ]; then
     train_cmd="$train_cmd --levels $LEVELS"
 fi
-# eval $train_cmd
+eval $train_cmd
 
 echo ""
 echo "✓ 训练完成! 模型保存在: $OUTPUT_DIR"

@@ -1,6 +1,6 @@
 {
   "data_path": "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32_equiangular_conservative.zarr",
-  "variable": "geopotential",
+  "variables": "geopotential",
   "levels": [
     500
   ],

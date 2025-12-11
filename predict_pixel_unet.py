@@ -175,7 +175,7 @@ def predict_pixel_unet(args):
     ds = ds.sel(time=slice(start, end))
 
     # 获取变量数据
-    variable_da = ds[config["variable"]]
+    variable_da = ds[config["variables"]]
 
     # 如果有level维度，根据config中的levels进行选择（用于数据加载）
     # 注意：数据加载时需要使用训练时使用的所有levels，而不是命令行指定的selected_levels
@@ -288,7 +288,7 @@ def predict_pixel_unet(args):
         # 全局归一化：只传递stats
         normalizer.load_stats(normalizer_data.get("stats", normalizer_data))
 
-    data = normalizer.transform(data, name=config["variable"])
+    data = normalizer.transform(data, name=config["variables"])
     print(f"归一化后范围: [{data.min():.2f}, {data.max():.2f}]")
 
     # 创建完整的序列数据集（不分割）
@@ -458,10 +458,15 @@ def main():
     # 归一化空间的指标
     print("\n归一化空间的指标:")
     metrics_norm = calculate_metrics(y_pred_selected, y_true_selected, ensemble=False)
+
+    # 添加MSE计算（参考predict.py）
+    mse_norm = np.mean((y_pred_selected - y_true_selected) ** 2)
+    metrics_norm["mse"] = float(mse_norm)
+
     print(format_metrics(metrics_norm))
 
     # 反归一化到物理单位
-    variable = config["variable"]
+    variable = config["variables"]
     C = y_pred.shape[2]
     H = y_pred.shape[3]
     W = y_pred.shape[4]
@@ -488,18 +493,26 @@ def main():
     metrics_phys = calculate_metrics(
         y_pred_phys_selected, y_true_phys_selected, ensemble=False
     )
+
+    # 添加MSE计算（参考predict.py）
+    mse_phys = np.mean((y_pred_phys_selected - y_true_phys_selected) ** 2)
+    metrics_phys["mse"] = float(mse_phys)
+
     print(format_metrics(metrics_phys))
 
-    # 计算每个lead time的RMSE
-    print("\n每个lead time的RMSE:")
+    # 计算每个lead time的RMSE和MSE
+    print("\n每个lead time的RMSE和MSE:")
     T_out = y_pred_phys_selected.shape[1]
     rmse_per_leadtime = {}
+    mse_per_leadtime = {}
     for t in range(T_out):
         y_pred_t = y_pred_phys_selected[:, t, :, :, :]  # (N, C, H, W)
         y_true_t = y_true_phys_selected[:, t, :, :, :]
-        rmse_t = np.sqrt(np.mean((y_pred_t - y_true_t) ** 2))
+        mse_t = np.mean((y_pred_t - y_true_t) ** 2)
+        rmse_t = np.sqrt(mse_t)
         rmse_per_leadtime[f"rmse_step_{t+1}"] = float(rmse_t)
-        print(f"  Step {t+1} ({(t+1)*6}h): {rmse_t:.4f} K")
+        mse_per_leadtime[f"mse_step_{t+1}"] = float(mse_t)
+        print(f"  Step {t+1} ({(t+1)*6}h): RMSE = {rmse_t:.4f} K, MSE = {mse_t:.4f} K²")
 
     # ========================================================================
     # Step 7: 保存结果
@@ -514,6 +527,7 @@ def main():
         "normalized_space": {k: float(v) for k, v in metrics_norm.items()},
         "physical_space": {k: float(v) for k, v in metrics_phys.items()},
         "physical_space_rmse_per_leadtime": rmse_per_leadtime,
+        "physical_space_mse_per_leadtime": mse_per_leadtime,
         "time_slice": args.time_slice,
         "n_samples": int(y_pred.shape[0]),
     }
@@ -618,6 +632,7 @@ def main():
     print(f"\n模式: PIXEL")
     print(f"总结 (物理空间):")
     print(f"  样本数: {y_pred.shape[0]}")
+    print(f"  MSE: {metrics_phys['mse']:.4f} K²")
     print(f"  RMSE: {metrics_phys['rmse']:.4f} K")
     print(f"  MAE: {metrics_phys['mae']:.4f} K")
     print(f"  相关系数: {metrics_phys['correlation']:.4f}")
