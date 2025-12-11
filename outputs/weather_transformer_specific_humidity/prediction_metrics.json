@@ -1,0 +1,33 @@
+{
+  "mode": "weather_transformer_specific_humidity",
+  "normalized_space": {
+    "mse": 0.0558332224574689,
+    "rmse": 0.2362905466950993,
+    "mae": 0.15452935244828805,
+    "rmse_step_1": 0.14446689794870754,
+    "rmse_step_2": 0.21186477127428716,
+    "rmse_step_3": 0.26112273836518124,
+    "rmse_step_4": 0.2989823396599144
+  },
+  "physical_space": {
+    "mse": 3.402919139131328e-07,
+    "rmse": 0.0005833454498949425,
+    "mae": 0.00038149640722715466,
+    "rmse_step_1": 0.00035665458799568397,
+    "rmse_step_2": 0.0005230439898865892,
+    "rmse_step_3": 0.0006446502554585493,
+    "rmse_step_4": 0.0007381166529044752
+  },
+  "physical_space_rmse_per_leadtime": {
+    "rmse_step_1": 0.00035665458799568397,
+    "rmse_step_2": 0.0005230439898865892,
+    "rmse_step_3": 0.0006446502554585493,
+    "rmse_step_4": 0.0007381166529044752
+  },
+  "time_slice": "2020-01-01:2020-12-31",
+  "n_samples": 1449,
+  "variables": [
+    "specific_humidity"
+  ],
+  "data_format": "spatial"
+}

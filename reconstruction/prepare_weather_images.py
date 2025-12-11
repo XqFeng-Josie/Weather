@@ -28,6 +28,13 @@ from PIL import Image
 from scipy.ndimage import zoom
 from tqdm import tqdm
 
+# 尝试导入 OpenCV（如果可用，用于更快的插值）
+try:
+    import cv2
+    HAS_OPENCV = True
+except ImportError:
+    HAS_OPENCV = False
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -94,12 +101,12 @@ def _process_single_time_step(args_tuple):
     处理单个时间步的辅助函数（用于并发处理）
 
     Args:
-        args_tuple: (time_slice, n_channels, target_size, idx)
+        args_tuple: (time_slice, n_channels, target_size, idx, use_opencv, interpolation_order)
 
     Returns:
         (idx, processed_slice)
     """
-    time_slice, n_channels, target_size, idx = args_tuple
+    time_slice, n_channels, target_size, idx, use_opencv, interpolation_order = args_tuple
 
     # 确保是3维: (C, H, W) 或 (H, W)
     if time_slice.ndim == 2:
@@ -114,8 +121,36 @@ def _process_single_time_step(args_tuple):
         c, h, w = time_slice.shape
         target_h, target_w = target_size
 
-        zoom_factors = (1, target_h / h, target_w / w)
-        time_slice = zoom(time_slice, zoom_factors, order=3)  # order=3 双三次插值
+        if use_opencv and HAS_OPENCV:
+            # 使用 OpenCV 进行更快的插值
+            # 转换到 (H, W, C) 格式
+            if time_slice.ndim == 3:
+                img = np.transpose(time_slice, (1, 2, 0))
+            else:
+                img = time_slice
+            
+            # 选择插值方法
+            if interpolation_order == 0:
+                interp_flag = cv2.INTER_NEAREST
+            elif interpolation_order == 1:
+                interp_flag = cv2.INTER_LINEAR
+            elif interpolation_order == 3:
+                interp_flag = cv2.INTER_CUBIC
+            else:
+                interp_flag = cv2.INTER_LINEAR
+            
+            # 执行插值
+            resized = cv2.resize(img, (target_w, target_h), interpolation=interp_flag)
+            
+            # 转换回 (C, H, W) 格式
+            if resized.ndim == 3:
+                time_slice = np.transpose(resized, (2, 0, 1))
+            else:
+                time_slice = resized[np.newaxis, :, :]
+        else:
+            # 使用 scipy.ndimage.zoom
+            zoom_factors = (1, target_h / h, target_w / w)
+            time_slice = zoom(time_slice, zoom_factors, order=interpolation_order)
 
     return (idx, time_slice)
 
@@ -125,7 +160,9 @@ def prepare_weather_data(
     n_channels: int = 3,
     target_size: tuple = None,
     n_workers: int = 1,
-    use_concurrent: bool = False,
+    use_concurrent: bool = None,
+    use_opencv: bool = True,
+    interpolation_order: int = 1,
 ) -> np.ndarray:
     """
     准备天气数据用于图像模型
@@ -134,12 +171,18 @@ def prepare_weather_data(
         data: 输入数据，shape (Time, H, W) 或 (Time, C, H, W)
         n_channels: 目标通道数（1或3）
         target_size: 目标尺寸 (H, W)，如果为None则保持原尺寸
-        n_workers: 并发工作进程数（仅在use_concurrent=True时有效）
-        use_concurrent: 是否使用并发处理（对于大数据集可能更快）
+        n_workers: 并发工作进程数（当 > 1 时自动启用并发）
+        use_concurrent: 是否使用并发处理（None 时自动判断：n_workers > 1 时启用）
+        use_opencv: 是否使用 OpenCV 进行插值（更快，如果可用）
+        interpolation_order: 插值顺序（0=最近邻, 1=双线性, 3=双三次）
 
     Returns:
         处理后的数据，shape (Time, C, H, W)
     """
+    # 自动判断是否使用并发
+    if use_concurrent is None:
+        use_concurrent = n_workers > 1
+    
     # 确保是4维: (Time, C, H, W)
     if data.ndim == 3:
         # (Time, H, W) -> (Time, 1, H, W)
@@ -154,19 +197,28 @@ def prepare_weather_data(
         time, c, h, w = data.shape
         target_h, target_w = target_size
 
-        # 对于大数据集，可以考虑并发处理每个时间步
-        # 注意：使用ThreadPoolExecutor而不是ProcessPoolExecutor，因为scipy的zoom操作
-        # 主要在C扩展中执行，GIL影响较小，且避免序列化开销
-        if use_concurrent and n_workers > 1 and time > 10:
-            # 准备任务
+        # 使用并发处理（当 n_workers > 1 且时间步数 > 1 时）
+        # 使用 ProcessPoolExecutor 以获得真正的并行处理（CPU密集型操作）
+        if use_concurrent and n_workers > 1 and time > 1:
+            # 检查 OpenCV 可用性
+            actual_use_opencv = use_opencv and HAS_OPENCV
+            if actual_use_opencv:
+                interp_method = "OpenCV"
+            else:
+                interp_method = f"scipy (order={interpolation_order})"
+                if use_opencv and not HAS_OPENCV:
+                    print(f"   ⚠️  OpenCV 不可用，使用 scipy.ndimage.zoom 替代")
+
+            # 准备任务（避免在任务中复制数据，直接传递索引）
             tasks = []
             for i in range(time):
-                tasks.append((data[i].copy(), n_channels, target_size, i))
+                # 只复制需要处理的数据切片，减少内存开销
+                tasks.append((data[i].copy(), n_channels, target_size, i, actual_use_opencv, interpolation_order))
 
-            # 并发处理
+            # 使用进程池进行并发处理
             results = {}
             failed_count = 0
-            with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
                 futures = {
                     executor.submit(_process_single_time_step, task): task[3]
                     for task in tasks
@@ -174,7 +226,7 @@ def prepare_weather_data(
 
                 with tqdm(
                     total=time,
-                    desc="🔄 插值处理",
+                    desc=f"🔄 插值处理 ({interp_method}, {n_workers}进程)",
                     unit="帧",
                     unit_scale=False,
                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
@@ -188,7 +240,8 @@ def prepare_weather_data(
                             task_idx = futures[future]
                             print(f"\n⚠️  处理帧 {task_idx} 时出错: {e}")
                         pbar.update(1)
-                        pbar.set_postfix({"失败": failed_count})
+                        if failed_count > 0:
+                            pbar.set_postfix({"失败": failed_count})
 
             if failed_count > 0:
                 print(f"\n⚠️  警告: {failed_count} 帧处理失败")
@@ -197,10 +250,36 @@ def prepare_weather_data(
             processed_data = np.stack([results[i] for i in range(time)], axis=0)
             return processed_data
         else:
-            # 原始方法：一次性处理所有时间步
-            zoom_factors = (1, 1, target_h / h, target_w / w)
-            # data = zoom(data, zoom_factors, order=1)  # order=1 表示双线性插值
-            data = zoom(data, zoom_factors, order=3)  # order=3 双三次插值
+            # 单线程方法：一次性处理所有时间步
+            if use_opencv and HAS_OPENCV:
+                # 使用 OpenCV 可能更快
+                processed_frames = []
+                for i in tqdm(range(time), desc="🔄 插值处理 (OpenCV)", leave=False):
+                    frame = data[i]  # (C, H, W)
+                    # 转换到 (H, W, C)
+                    img = np.transpose(frame, (1, 2, 0))
+                    # 选择插值方法
+                    if interpolation_order == 0:
+                        interp_flag = cv2.INTER_NEAREST
+                    elif interpolation_order == 1:
+                        interp_flag = cv2.INTER_LINEAR
+                    elif interpolation_order == 3:
+                        interp_flag = cv2.INTER_CUBIC
+                    else:
+                        interp_flag = cv2.INTER_LINEAR
+                    # 执行插值
+                    resized = cv2.resize(img, (target_w, target_h), interpolation=interp_flag)
+                    # 转换回 (C, H, W)
+                    if resized.ndim == 3:
+                        resized = np.transpose(resized, (2, 0, 1))
+                    else:
+                        resized = resized[np.newaxis, :, :]
+                    processed_frames.append(resized)
+                data = np.stack(processed_frames, axis=0)
+            else:
+                # 使用 scipy.ndimage.zoom
+                zoom_factors = (1, 1, target_h / h, target_w / w)
+                data = zoom(data, zoom_factors, order=interpolation_order)
 
     return data
 
@@ -578,12 +657,24 @@ def main():
         "--n-workers",
         type=int,
         default=4,
-        help="并发工作线程/进程数（用于图片保存和数据处理），默认4",
+        help="并发工作线程/进程数（用于图片保存和数据处理），默认4（>1时自动启用并发插值）",
     )
     parser.add_argument(
-        "--concurrent-interpolation",
+        "--no-concurrent-interpolation",
         action="store_true",
-        help="使用并发处理数据插值（对于大数据集可能更快）",
+        help="禁用并发处理数据插值（默认启用，当 n-workers > 1 时）",
+    )
+    parser.add_argument(
+        "--no-opencv",
+        action="store_true",
+        help="禁用 OpenCV 插值（默认启用，如果可用，比 scipy 快很多）",
+    )
+    parser.add_argument(
+        "--interpolation-order",
+        type=int,
+        default=1,
+        choices=[0, 1, 3],
+        help="插值顺序：0=最近邻（最快），1=双线性（默认，快），3=双三次（慢但质量高）",
     )
 
     args = parser.parse_args()
@@ -594,8 +685,12 @@ def main():
     print("=" * 80)
     print("ERA5 天气数据 → 图片转换工具")
     print("=" * 80)
-    print(f"并发工作线程数: {args.n_workers}")
-    print(f"并发插值: {'启用' if args.concurrent_interpolation else '禁用'}")
+    print(f"并发工作进程数: {args.n_workers}")
+    use_concurrent = not args.no_concurrent_interpolation and args.n_workers > 1
+    print(f"并发插值: {'启用' if use_concurrent else '禁用'}")
+    use_opencv = not args.no_opencv
+    print(f"OpenCV 插值: {'启用' if use_opencv and HAS_OPENCV else '禁用' if not use_opencv else '不可用'}")
+    print(f"插值顺序: {args.interpolation_order} ({'最近邻' if args.interpolation_order == 0 else '双线性' if args.interpolation_order == 1 else '双三次'})")
     print(f"并发统计量计算: {'启用' if args.concurrent_stats else '禁用'}")
     print("=" * 80)
 
@@ -654,14 +749,21 @@ def main():
     # 2. 插值到目标尺寸
     interp_start = time.time()
     print(f"\n[2/5] 🔄 插值到目标尺寸: {args.target_size}")
-    if args.concurrent_interpolation:
-        print(f"   使用并发处理（工作线程数: {args.n_workers}）")
+    use_concurrent = not args.no_concurrent_interpolation and args.n_workers > 1
+    if use_concurrent:
+        print(f"   使用并发处理（工作进程数: {args.n_workers}）")
+    if use_opencv and HAS_OPENCV:
+        print(f"   使用 OpenCV 进行插值（更快）")
+    elif use_opencv and not HAS_OPENCV:
+        print(f"   ⚠️  OpenCV 不可用，使用 scipy.ndimage.zoom（安装 opencv-python 可加速）")
     data_processed = prepare_weather_data(
         data,
         n_channels=args.n_channels,
         target_size=tuple(args.target_size),
         n_workers=args.n_workers,
-        use_concurrent=args.concurrent_interpolation,
+        use_concurrent=use_concurrent,
+        use_opencv=use_opencv,
+        interpolation_order=args.interpolation_order,
     )
     interp_time = time.time() - interp_start
     print(f"   处理后 shape: {data_processed.shape}")

@@ -88,7 +88,8 @@ Reconstruction test results based on 1460 test samples (2m_temperature, 256×256
 
 | Codec | RMSE (K) | Correlation | Recommendation |
 |-------|----------|-------------|----------------|
-| **RAE-MAE** ⭐ | **0.94** | **0.999** | ⭐⭐⭐⭐⭐ Best |
+| **RAE-MAE_decSmall** ⭐ | **0.17** | **0.999** | ⭐⭐⭐⭐⭐ Best |
+| **RAE-MAE** | **0.94** | **0.999** | ⭐⭐⭐⭐⭐ Excellent |
 | **VAE** | 2.35 | 0.998 | ⭐⭐⭐⭐ Excellent |
 | **RAE-MAE_decXL** | 4.44 | 0.994 | ⭐⭐⭐ Good |
 | **RAE-DINOv2-B** | 4.92 | 0.972 | ⭐⭐⭐ Good |

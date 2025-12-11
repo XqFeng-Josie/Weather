@@ -18,9 +18,11 @@
 2. **RAE (Representation Autoencoder)** ⭐
    - 支持多种预训练编码器：
      - **DINOv2-B**: Vision Transformer，自监督学习
-     - **DINOv2-B_decXL**: DINOv2-B + Finetune的解码器
+     - **DINOv2-B_decXL**: DINOv2-B + Finetune的解码器（更大的ViT解码器）
+     - **DINOv2-B_decSmall**: DINOv2-B + Finetune的解码器（更小的ViT解码器）
      - **MAE**: Masked Autoencoder
-     - **MAE_decXL**: MAE + Finetune的解码器
+     - **MAE_decXL**: MAE + Finetune的解码器（更大的ViT解码器）
+     - **MAE_decSmall**: MAE + Finetune的解码器（更小的ViT解码器）
      - **SigLIP2**: Sigmoid Loss for Language-Image Pre-training
    - 需要从 RAE 项目下载预训练模型
 
@@ -107,46 +109,18 @@ hf download nyu-visionx/RAE-collections --local-dir models
 
 **测试的 encoder：**
 - DINOv2-B
-- DINOv2-B_decXL (更大的解码器)
-- DINOv2-B_decSmall(ViT架构的小型解码器)
+- DINOv2-B_decXL (更大的ViT解码器)
+- DINOv2-B_decSmall(更小的ViT解码器)
 - MAE
-- MAE_decXL (更大的解码器)
+- MAE_decXL (更大的ViT解码器)
+- MAE_decSmall(更小的ViT解码器)
 - SigLIP2
 
 **输出：**
 - `outputs/rae_reconstruction/recon_samples_*/`: 各encoder的重建结果
 - `outputs/rae_reconstruction/recon_merged/comparison_4samples_*.png`: 对比可视化
 
-<!-- ### 4. 测试 S-VAE 重建
-
-S-VAE 需要先训练，然后测试：
-
-#### 4.1 训练 S-VAE
-
-```bash
-python train_svae.py \
-    --data-path weather_images \
-    --output-dir outputs/svae \
-    --epochs 100 \
-    --batch-size 16 \
-    --lr 1e-4 \
-    --z-dim 128 \
-    --hidden-dims 64 128 256 512
-``` -->
-
-<!-- 详细说明请参考 [SVAE_README.md](SVAE_README.md) -->
-
-<!-- #### 4.2 测试 S-VAE 重建
-
-```bash
-python test_svae_reconstruction.py \
-    --data-path weather_images \
-    --model-path outputs/svae/best_model.pt \
-    --n-test-samples 100 \
-    --save-separate
-``` -->
-
-### 5. 统一对比分析 ⭐
+### 4. 统一对比分析 ⭐
 
 使用 `compare_reconstructions.py` 可以对比多个 codec 的重建效果：
 
@@ -199,97 +173,80 @@ python compare_reconstructions.py \
 
 ## 📈 实际测试结果
 
+Train time_slice 2015-01-01:2019-12-31
+Test time_slice 2020-01-01:2020-12-31 （1460 个）
 基于 **1460 个测试样本**（2m_temperature 变量，256×256 分辨率）的重建测试结果：
 
 ### 物理空间指标对比（温度单位：K）
 
 | Codec | RMSE (K) | MAE (K) | SSIM | 相关系数 | 状态 |
-|-------|----------|--------|------|----------|------|
+|-------|----------|---------|------|----------|------|
 | **RAE-MAE_decSmall** ⭐ | **0.17** | **0.12** | - | - | ✅ 最佳 |
-| **RAE-MAE** | **0.94** | **0.72** | **0.999** | **0.999** | ✅ 优秀 |
+| **RAE-MAE** | **0.96** | **0.73** | **0.999** | **0.999** | ✅ 优秀 |
 | **RAE-DINOv2-B_decSmall** | 1.20 | 0.83 | - | - | ✅ 良好 |
-| **VAE** | 2.35 | 2.01 | 0.998 | 0.998 | ✅ 良好 |
-| **RAE-MAE_decXL** | 4.44 | 3.85 | 0.992 | 0.994 | ✅ 良好 |
-| **RAE-DINOv2-B** | 4.92 | 3.90 | 0.971 | 0.972 | ✅ 良好 |
-| **RAE-DINOv2-B_decXL** | 7.27 | 5.54 | 0.956 | 0.986 | ⚠️ 一般 |
-| **RAE-SigLIP2** | 7.25 | 6.03 | 0.976 | 0.977 | ⚠️ 一般 |
+| **SD-VAE** | 2.46 | 2.13 | 0.998 | 0.998 | ✅ 良好 |
+| **RAE-MAE_decXL** | 4.47 | 3.92 | 0.992 | 0.994 | ✅ 良好 |
+| **RAE-DINOv2-B** | 5.03 | 3.99 | 0.971 | 0.974 | ✅ 良好 |
+| **RAE-SigLIP2** | 6.86 | 5.65 | 0.977 | 0.977 | ⚠️ 一般 |
+| **RAE-DINOv2-B_decXL** | 7.01 | 5.42 | 0.962 | 0.986 | ⚠️ 一般 |
 
 ### 归一化空间指标对比
 
 | Codec | RMSE | MAE | PSNR (dB) | SSIM | 相关系数 |
 |-------|------|-----|-----------|------|----------|
-| **RAE-MAE** ⭐ | **0.008** | **0.006** | **42.66** | **0.999** | **0.999** |
-| **RAE-MA_decSmallE**  | **0.011** | **0.008** | - | - | - |
-| **VAE** | 0.016 | 0.015 | 36.19 | 0.999 | 0.999 |
-| **RAE-MAE_decXL** | 0.037 | 0.031 | 28.71 | 0.991 | 0.994 |
+| **RAE-MAE** ⭐ | **0.007** | **0.006** | **42.81** | **0.999** | **0.999** |
+| **RAE-MAE_decSmall** | **0.011** | **0.008** | - | - | - |
+| **SD-VAE** | 0.016 | 0.015 | 36.03 | 0.999 | 0.999 |
+| **RAE-MAE_decXL** | 0.036 | 0.031 | 28.90 | 0.991 | 0.995 |
 | **RAE-DINOv2-B** | 0.039 | 0.031 | 28.14 | 0.973 | 0.973 |
+| **RAE-SigLIP2** | 0.048 | 0.041 | 26.37 | 0.983 | 0.984 |
 | **RAE-DINOv2-B_decSmall** | 0.057 | 0.040 | - | - | - |
-| **RAE-DINOv2-B_decXL** | 0.061 | 0.046 | 24.23 | 0.956 | 0.988 |
-| **RAE-SigLIP2** | 0.051 | 0.043 | 25.85 | 0.982 | 0.984 |
+| **RAE-DINOv2-B_decXL** | 0.058 | 0.044 | 24.73 | 0.961 | 0.988 |
 
 ### 关键发现
 
-1. **RAE-MAE 表现最佳** ⭐
-   - 物理空间 RMSE 仅 **0.94K**，远低于验收标准（< 10K）
+1. **RAE-MAE_decSmall 表现最佳** ⭐
+   - 物理空间 RMSE 仅 **0.17K**，远超其他 codec
+   - 推荐用于高精度预测任务
+
+2. **RAE-MAE 表现优秀** ⭐
+   - 物理空间 RMSE **0.96K**，远低于验收标准（< 10K）
    - 相关系数达到 **0.999**，几乎完美重建
+   - 归一化空间 RMSE **0.007**，PSNR **42.81 dB**
    - 推荐用于 Latent U-Net 训练
 
-2. **VAE 表现优秀**
-   - 物理空间 RMSE **2.35K**，满足验收标准
+3. **RAE-DINOv2-B_decSmall 表现良好**
+   - 物理空间 RMSE **1.20K**，优于原版 RAE-DINOv2-B（5.03K）
+   - 归一化空间指标略低于原版，但物理空间表现更优
+
+4. **SD-VAE 表现良好**
+   - 物理空间 RMSE **2.46K**，满足验收标准
+   - 归一化空间 RMSE **0.016**，PSNR **36.03 dB**
    - 开箱即用，无需额外训练
    - 适合快速原型开发
 
-3. **RAE-MAE_decXL 表现良好**
-   - Finetune 解码器后性能略有下降（相比 RAE-MAE）
-   - 但仍满足验收标准（RMSE < 10K）
+5. **RAE-MAE_decXL 表现良好**
+   - 物理空间 RMSE **4.47K**，满足验收标准
+   - Finetune 解码器后性能下降（相比 RAE-MAE）
+   - 归一化空间 RMSE **0.036**，PSNR **28.90 dB**
 
-4. **RAE-DINOv2-B 系列表现一般**
-   - 基础版本和 Finetune 版本都未达到最佳性能
-   - 建议优先考虑 RAE-MAE
+6. **RAE-DINOv2-B 表现一般**
+   - 物理空间 RMSE **5.03K**，满足验收标准但未达到最佳性能
+   - 归一化空间 RMSE **0.039**，PSNR **28.14 dB**
+   - 建议优先考虑 RAE-MAE 系列
 
-5. **RAE-SigLIP2 表现较差**
-   - RMSE 7.25K，接近验收标准上限
+7. **RAE-SigLIP2 和 RAE-DINOv2-B_decXL 表现较差**
+   - 物理空间 RMSE 分别为 **6.86K** 和 **7.01K**，接近验收标准上限
    - 不建议用于高精度预测任务
-  
-6. **RAE-DINOv2-B_decSmall**
-   - 在物理空间指标中表现超过原版RAE-DINOv2-B
-   - 归一化空间指标中表现不如原版RAE-DINOv2-B
 
 ### 推荐使用顺序
 
-1. **RAE-MAE** - 最佳重建质量，推荐用于生产环境
-2. **VAE** - 开箱即用，适合快速实验
-3. **RAE-MAE_decXL** - 备选方案，性能良好
+1. **RAE-MAE_decSmall** - 最佳重建质量（RMSE 0.17K），推荐用于生产环境
+2. **RAE-MAE** - 优秀重建质量（RMSE 0.96K），推荐用于生产环境
+3. **RAE-DINOv2-B_decSmall** - 良好性能（RMSE 1.20K），备选方案
+4. **SD-VAE** - 开箱即用，适合快速实验（RMSE 2.46K）
+5. **RAE-MAE_decXL** - 备选方案，性能良好（RMSE 4.47K）
 
-## 🔄 数据流程
-
-<!-- ### 归一化流程
-
-1. **准备图像** (`prepare_weather_images.py`):
-   - 从 zarr 加载原始数据（物理单位，如 K）
-   - 插值到目标尺寸（如 256×256）
-   - 全局归一化到 [0, 255] 并保存为 PNG
-   - **保存归一化参数**到 `normalization_stats.json`
-
-2. **Codec 测试** (`test_*_reconstruction.py`):
-   - 加载图像 [0, 255]
-   - 转换为 codec 输入范围（VAE: [-1, 1], RAE: [0, 1]）
-   - Codec 重建（encode + decode）
-   - 转换回 [0, 255]
-   - 使用保存的归一化参数反归一化到物理单位
-
-3. **对比分析** (`compare_reconstructions.py`):
-   - 自动加载归一化参数
-   - 计算归一化空间和物理单位的指标
-   - 生成对比可视化 -->
-
-<!-- ### 归一化参数文件
-
-`normalization_stats.json` 包含：
-- `method`: 归一化方法（'minmax' 或 'zscore'）
-- `variable`: 变量名
-- `original_min/max`: 原始数据范围（minmax 方法）
-- `original_mean/std`: 原始数据统计量（zscore 方法） -->
 
 ## 🔧 环境要求
 
@@ -349,7 +306,6 @@ pip install gcsfs zarr xarray
 
 ## 📚 相关文档
 
-<!-- - [S-VAE 详细说明](SVAE_README.md) - S-VAE 训练和测试指南 -->
 - [主项目 README](../README.md) - Weather 项目总体说明
 - [模型架构文档](../MODEL.md) - 详细模型架构说明
 

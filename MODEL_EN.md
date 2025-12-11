@@ -736,6 +736,121 @@ latent = vae_wrapper.encode(images)  # (B, 768, 16, 16)
 reconstructed = vae_wrapper.decode(latent)  # (B, C, H, W)
 ```
 
+**Currently, the project mainly uses two modes:**
+
+1. **Stage-A (RAE Reconstruction)**: Only Encoder + Decoder, reconstructing future weather fields.
+2. **Stage-1 Direct (Direct Prediction)**: Using historical sequences through Encoder → Decoder to directly predict future weather fields (without DiT).
+
+#### Encoder+Decoder Direct Prediction Model Structure
+```
+History Encoder (ExternalRepEncoder for history):
+  Input history sequence: (B, T_in, C_in, H, W)
+    ↓
+  Time + channel concatenation: (B, T_in * C_in, H, W)
+    ↓
+  1×1 convolution in_adapter: (T_in*C_in) → 3 channels
+    ↓
+  Resize to encoder_input_size (e.g., 518×518)
+    ↓
+  Pre-trained Vision Transformer backbone (DINOv2 / MAE / SigLIP2)
+    ↓
+  History tokens:
+    (B, latent_dim, H_latent, W_latent)
+
+RAE Decoder (RAEDecoder):
+  History tokens: (B, latent_dim, H_latent, W_latent)
+    ↓
+  RAEDecoder directly predicts future:
+    ↓
+  Predicted future weather field: (B, T_out, C_out, H, W)
+    # Example: from 12-step history → 4-step future 2m_temperature
+```
+
+#### Input/Output
+
+- **Encoding**:
+  - **Input**: `(B, T_in, C_in, H, W)` - x_hist
+  - **Output**: `(B, latent_dim, H_latent, W_latent)` - tokens_hist
+    - `latent_dim`: Depends on encoder (DINOv2-base: 768, SigLIP2-base: 768, DINOv2-G/14: 1536)
+    - `H_latent, W_latent`: Depends on encoder input size and patch size
+  
+- **Decoding**:
+  - **Input**: `(B, latent_dim, H_latent, W_latent)` - tokens_hist
+  - **Output**: `(B, T_out, C_out, H, W)` - y_pred
+
+#### Supported Encoder Types (Examples)
+
+1. **DINOv2-G/14** (currently used in experiments)
+   - `timm` name: `vit_giant_patch14_dinov2`
+   - Input size: 518×518
+   - Patch size: 14
+   - Latent dimension: 1536
+   - Latent space: 37×37
+
+2. **DINOv2-Base/16**
+   - `facebook/dinov2-base`
+   - Input size: 224×224
+   - Patch size: 16
+   - Latent dimension: 768
+   - Latent space: 14×14
+
+3. **SigLIP2 / MAE / Other ViTs**
+   - Can switch by modifying `timm.create_model` name
+   - External structure (in_adapter → ViT → RAEDecoder) remains unchanged
+
+#### Working Principle (for current project)
+
+1. **Encoder backbone frozen, only train in_adapter (optional)**
+   - DINOv2 backbone parameters fixed (`freeze_backbone=True`)
+   - 1×1 in_adapter can be trained or frozen, used to map weather fields to encoder's expected distribution space
+
+2. **RAEDecoder fine-tunable**
+   - Decoder weights loaded from RAE pre-trained weights (or randomly initialized), continue training on weather tasks
+   - Stage-A: Learn "future → latent space → reconstruct future" mapping
+   - Stage-1: Learn "history → latent space → predict future" mapping
+
+3. **Automatic resize / interpolation**
+   - Input ERA5 grid is small (64×32)
+   - ExternalRepEncoder internally resizes to ViT pre-trained size (e.g., 518×518), encodes to 37×37 tokens
+   - Decoder output is then interpolated/reshaped back to original grid size `(H, W)`
+
+4. **Flexible combination of Stage-A / Stage-1 / Stage-B**
+   - Stage-A: Only evaluate RAE reconstruction quality (MSE/MAE) to assess latent space representation
+   - Stage-1: Directly use RAE for deterministic prediction
+   - Stage-B (optional): Add DH-DiT / SimpleDiT on latent space for diffusion prediction (existing RAE+LDM version)
+
+#### Relationship to Task (Weather Prediction)
+
+- **Advantages**:
+  - ✅ **Decoder can be fine-tuned for weather fields**: Compared to SD VAE which is fixed and image-oriented, RAE decoder can be retrained on ERA5, making reconstruction/prediction more aligned with meteorological structure
+  - ✅ **Leverage large-scale visual pre-training (DINOv2)**: Has advantages in spatial structure understanding, beneficial for capturing fronts, troughs, vortices, etc.
+  - ✅ **High-dimensional latent representation**: 1536×37×37 latent capacity is much larger than 4×(H/8×W/8), more suitable for preserving multi-variable, multi-temporal information
+  - ✅ **Strong generality**: Same ExternalRepEncoder + RAEDecoder can be shared by Stage-A reconstruction, Stage-1 Direct, Stage-B diffusion
+
+- **Limitations**:
+  - ❌ Must resize ERA5 grid (64×32 → 518×518), introducing interpolation error
+  - ❌ Latent is very large, requires high memory and computing power
+  - ❌ Decoder / in_adapter require additional training, engineering complexity higher than "directly using SD VAE"
+
+#### Use Cases
+
+- ✅ Want to leverage DINOv2 and other **strong pre-trained vision models** in weather tasks
+- ✅ Need **fine-tunable decoder** to adapt to ERA5/WeatherBench datasets
+- ✅ High accuracy requirements for spatial structure (pattern recognition, extreme events), not satisfied with simple CNN/VAE
+- ✅ Training environment with memory ≥ 24GB (especially when using DINOv2-G/14)
+
+#### Differences from SD VAE (comparison in this project)
+
+| Feature | SD VAE | RAE-Weather |
+|---------|--------|-------------|
+| Latent channels | 4 | latent_dim (e.g., 1536 for DINOv2-G/14) |
+| Latent space | (4, H/8, W/8) | (latent_dim, H_latent, W_latent) |
+| Encoder backbone | CNN-based VAE, fixed | ViT-based (DINOv2/MAE/SigLIP2), fixed |
+| Decoder | Fixed | **Fine-tunable** (RAEDecoder) |
+| Input range / Normalization | [-1,1] / simple normalization | Normalized weather fields (dataset statistics/climatology) |
+| Input resize | Usually not needed | Need resize to encoder_input_size |
+| Fitting to task | VAE reconstructs images | RAE reconstructs & directly predicts weather fields |
+
 ---
 
 ### Pixel U-Net
